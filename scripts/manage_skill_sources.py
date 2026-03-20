@@ -22,6 +22,7 @@ import zipfile
 VALID_BUCKETS = {"shared", "codex", "claude"}
 VALID_SCOPES = {"repo", "local"}
 DEFAULT_REF = "main"
+DEPLOY_STATE_FILENAME = "deploy-state.local.json"
 
 
 class SourceError(Exception):
@@ -58,6 +59,19 @@ def save_registry(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def deploy_state_path(repo_root: Path) -> Path:
+    return repo_root / "config" / DEPLOY_STATE_FILENAME
+
+
+def load_deploy_state(path: Path) -> dict:
+    if not path.is_file():
+        return {"version": 1, "targets": {}}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if "targets" not in payload or not isinstance(payload["targets"], dict):
+        return {"version": 1, "targets": {}}
+    return payload
+
+
 def registry_path(repo_root: Path, scope: str) -> Path:
     if scope not in VALID_SCOPES:
         raise SourceError(f"Unsupported scope: {scope}")
@@ -84,6 +98,65 @@ def ensure_skill_dir(path: Path) -> None:
         raise SourceError(f"Skill directory not found: {path}")
     if not (path / "SKILL.md").is_file():
         raise SourceError(f"SKILL.md not found in skill directory: {path}")
+
+
+def classify_repo_asset(relative_path: str, marker_name: str) -> dict:
+    normalized = relative_path.replace("\\", "/").strip("/")
+    parts = normalized.split("/") if normalized else []
+    bucket = "unknown"
+    harness = None
+    asset_type = "unknown"
+    install_strategy = "ignore"
+
+    if marker_name == "SKILL.md":
+        asset_type = "skill"
+        install_strategy = "installable"
+        if len(parts) >= 3 and parts[0] == ".claude" and parts[1] == "skills":
+            bucket = "claude"
+            harness = "claude"
+        elif len(parts) >= 3 and parts[0] == ".codex" and parts[1] == "skills":
+            bucket = "codex"
+            harness = "codex"
+        elif len(parts) >= 3 and parts[0] == "claude" and parts[1] == "skills":
+            bucket = "claude"
+            harness = "claude"
+        elif len(parts) >= 3 and parts[0] == "codex" and parts[1] == "skills":
+            bucket = "codex"
+            harness = "codex"
+        elif len(parts) >= 2 and parts[0] == "skills":
+            bucket = "shared"
+        elif len(parts) >= 3 and parts[0].startswith(".") and parts[1] == "skills":
+            harness = parts[0].lstrip(".")
+        elif len(parts) >= 3 and parts[1] == "skills":
+            harness = parts[0]
+    else:
+        asset_type = "agent"
+        install_strategy = "manual"
+        if len(parts) >= 3 and parts[0] == ".claude" and parts[1] == "agents":
+            bucket = "claude"
+            harness = "claude"
+        elif len(parts) >= 3 and parts[0] == ".codex" and parts[1] == "agents":
+            bucket = "codex"
+            harness = "codex"
+        elif len(parts) >= 2 and parts[0] == "agents":
+            bucket = "shared"
+        elif len(parts) >= 3 and parts[0].startswith(".") and parts[1] == "agents":
+            harness = parts[0].lstrip(".")
+        elif len(parts) >= 3 and parts[1] == "agents":
+            harness = parts[0]
+
+    name = parts[-1] if parts else normalized
+    if asset_type == "agent" and "." in name:
+        name = name.rsplit(".", 1)[0]
+
+    return {
+        "path": normalized,
+        "name": name,
+        "bucket": bucket,
+        "harness": harness,
+        "asset_type": asset_type,
+        "install_strategy": install_strategy,
+    }
 
 
 def skill_dest(repo_root: Path, bucket: str, name: str) -> Path:
@@ -120,11 +193,21 @@ def normalize_plugin_path(path: Path) -> Path:
 
 def list_records(repo_root: Path) -> list[dict]:
     records: list[dict] = []
+    deploy_state = load_deploy_state(deploy_state_path(repo_root))
     for scope in ("repo", "local"):
         registry = load_registry(registry_path(repo_root, scope))
         for key, record in registry["skills"].items():
             item = dict(record)
             item["key"] = key
+            deployments: dict[str, dict] = {}
+            for target_id, target in deploy_state.get("targets", {}).items():
+                skill_state = target.get("skills", {}).get(key)
+                if skill_state:
+                    deployments[target_id] = {
+                        "status": skill_state.get("status"),
+                        "target_up_to_date": skill_state.get("target_up_to_date"),
+                    }
+            item["deployments"] = deployments
             records.append(item)
     return sorted(records, key=lambda record: record["key"])
 
@@ -295,6 +378,20 @@ def validate_relative_repo_path(path: str) -> None:
         raise SourceError("GitHub skill path must stay inside the repo.")
 
 
+def parse_github_repo_only_url(url: str, default_ref: str) -> tuple[str, str]:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.netloc != "github.com":
+        raise SourceError("Only GitHub URLs are supported for repo scans.")
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        raise SourceError("Invalid GitHub URL.")
+    owner, repo = parts[0], parts[1]
+    ref = default_ref
+    if len(parts) > 3 and parts[2] == "tree":
+        ref = parts[3]
+    return f"{owner}/{repo}", ref
+
+
 def parse_github_repo_url(url: str, default_ref: str) -> GithubSource:
     parsed = urllib.parse.urlparse(url)
     if parsed.netloc != "github.com":
@@ -397,6 +494,36 @@ def git_sparse_checkout(repo: str, ref: str, skill_path: str, dest_dir: Path) ->
     return repo_dir
 
 
+def git_clone_repo(repo: str, ref: str, dest_dir: Path) -> Path:
+    repo_dir = dest_dir / "repo"
+    clone_cmd = [
+        "git",
+        "clone",
+        "--depth",
+        "1",
+        "--single-branch",
+        "--branch",
+        ref,
+        f"https://github.com/{repo}.git",
+        str(repo_dir),
+    ]
+    try:
+        run_git(clone_cmd)
+    except SourceError:
+        fallback = [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            f"git@github.com:{repo}.git",
+            str(repo_dir),
+        ]
+        run_git(fallback)
+        run_git(["git", "-C", str(repo_dir), "checkout", ref])
+    return repo_dir
+
+
 @contextmanager
 def materialize_github_skill(source: GithubSource):
     validate_relative_repo_path(source.skill_path)
@@ -419,6 +546,144 @@ def materialize_github_skill(source: GithubSource):
         ensure_skill_dir(skill_dir)
         resolved_revision = resolve_github_ref(source.repo, source.ref)
         yield skill_dir, resolved_revision
+
+
+@contextmanager
+def materialize_github_repo(repo: str, ref: str = DEFAULT_REF, method: str = "auto"):
+    with tempfile.TemporaryDirectory(prefix="agent-skill-sync-scan-") as tmp_dir:
+        tmp_root = Path(tmp_dir)
+        if method in {"download", "auto"}:
+            try:
+                repo_root = download_repo_zip(repo, ref, tmp_root)
+            except SourceError:
+                if method == "download":
+                    raise
+                repo_root = git_clone_repo(repo, ref, tmp_root)
+        elif method == "git":
+            repo_root = git_clone_repo(repo, ref, tmp_root)
+        else:
+            raise SourceError(f"Unsupported fetch method: {method}")
+        resolved_revision = resolve_github_ref(repo, ref)
+        yield repo_root, resolved_revision
+
+
+def scan_materialized_repo(
+    *,
+    repo_root: Path,
+    repo: str,
+    ref: str,
+    resolved_revision: str,
+    include_unknown: bool = False,
+) -> dict:
+    groups: dict[str, list[dict]] = {"shared": [], "codex": [], "claude": [], "unknown": []}
+    skills: list[dict] = []
+    agents: list[dict] = []
+
+    for skill_md in sorted(repo_root.rglob("SKILL.md")):
+        skill_dir = skill_md.parent
+        relative = skill_dir.relative_to(repo_root).as_posix()
+        classified = classify_repo_asset(relative, "SKILL.md")
+        if classified["bucket"] == "unknown" and not include_unknown:
+            continue
+        item = {
+            "name": classified["name"],
+            "path": classified["path"],
+            "bucket": classified["bucket"],
+            "harness": classified["harness"],
+            "asset_type": "skill",
+            "install_strategy": classified["install_strategy"],
+            "repo": repo,
+            "ref": ref,
+            "resolved_revision": resolved_revision,
+        }
+        skills.append(item)
+        groups.setdefault(classified["bucket"], []).append(item)
+
+    for base in (".claude/agents", ".codex/agents", "agents"):
+        agent_root = repo_root / base
+        if not agent_root.is_dir():
+            continue
+        for file_path in sorted(agent_root.rglob("*")):
+            if not file_path.is_file() or file_path.name.startswith("."):
+                continue
+            relative = file_path.relative_to(repo_root).as_posix()
+            classified = classify_repo_asset(relative, file_path.name)
+            if classified["bucket"] == "unknown" and not include_unknown:
+                continue
+            agents.append(
+                {
+                    "name": classified["name"],
+                    "path": classified["path"],
+                    "bucket": classified["bucket"],
+                    "harness": classified["harness"],
+                    "asset_type": "agent",
+                    "install_strategy": classified["install_strategy"],
+                    "repo": repo,
+                    "ref": ref,
+                    "resolved_revision": resolved_revision,
+                }
+            )
+
+    for bucket in groups:
+        groups[bucket] = sorted(groups[bucket], key=lambda item: item["path"])
+    agents = sorted(agents, key=lambda item: item["path"])
+
+    install_plan = {
+        "skills": {
+            "shared": {
+                "count": len(groups["shared"]),
+                "items": [item["path"] for item in groups["shared"]],
+            },
+            "codex": {
+                "count": len(groups["codex"]),
+                "items": [item["path"] for item in groups["codex"]],
+            },
+            "claude": {
+                "count": len(groups["claude"]),
+                "items": [item["path"] for item in groups["claude"]],
+            },
+            "recognized_total": len(groups["shared"]) + len(groups["codex"]) + len(groups["claude"]),
+        },
+        "agents": {
+            "manual_total": len(agents),
+            "items": [item["path"] for item in agents],
+        },
+    }
+
+    return {
+        "repo": repo,
+        "ref": ref,
+        "resolved_revision": resolved_revision,
+        "skills": sorted(skills, key=lambda item: item["path"]),
+        "agents": agents,
+        "groups": groups,
+        "summary": {bucket: len(items) for bucket, items in groups.items()},
+        "install_plan": install_plan,
+    }
+
+
+def scan_github_repo(
+    *,
+    repo: str | None = None,
+    url: str | None = None,
+    ref: str = DEFAULT_REF,
+    method: str = "auto",
+    include_unknown: bool = False,
+) -> dict:
+    repo_name = repo
+    repo_ref = ref
+    if url:
+        repo_name, repo_ref = parse_github_repo_only_url(url, ref)
+    if not repo_name:
+        raise SourceError("scan-github requires --repo or --url.")
+    with materialize_github_repo(repo_name, repo_ref, method=method) as (materialized_root, resolved_revision):
+        return scan_materialized_repo(
+            repo_root=materialized_root,
+            repo=repo_name,
+            ref=repo_ref,
+            resolved_revision=resolved_revision,
+            include_unknown=include_unknown,
+        )
 
 
 def load_github_source_for_record(record: dict) -> tuple[Path, str]:
@@ -470,15 +735,140 @@ def install_github_skill(
         )
 
 
+def normalize_batch_selections(selections: list[str] | None) -> set[str]:
+    if not selections:
+        return {"recognized"}
+    normalized = {item.lower() for item in selections}
+    valid = {"recognized", "shared", "codex", "claude"}
+    invalid = sorted(item for item in normalized if item not in valid)
+    if invalid:
+        raise SourceError(f"Unsupported batch selection(s): {', '.join(invalid)}")
+    return normalized
+
+
+def selected_scan_items(scan: dict, selections: list[str] | None = None) -> list[dict]:
+    selected = normalize_batch_selections(selections)
+    buckets: set[str] = set()
+    if "recognized" in selected:
+        buckets.update({"shared", "codex", "claude"})
+    buckets.update(item for item in selected if item in {"shared", "codex", "claude"})
+
+    items: list[dict] = []
+    seen_paths: set[str] = set()
+    for bucket in ("shared", "codex", "claude"):
+        if bucket not in buckets:
+            continue
+        for item in scan["groups"].get(bucket, []):
+            if item["path"] in seen_paths:
+                continue
+            seen_paths.add(item["path"])
+            items.append(item)
+    return items
+
+
+def install_scanned_skills(
+    *,
+    repo_root: Path,
+    scan: dict,
+    selections: list[str] | None,
+    source_repo_root: Path,
+    scope: str = "repo",
+) -> dict:
+    items = selected_scan_items(scan, selections)
+    results: list[dict] = []
+    installed_total = 0
+    skipped_total = 0
+
+    for item in items:
+        source_dir = source_repo_root / item["path"]
+        key = registry_key(item["bucket"], item["name"])
+        dest = skill_dest(repo_root, item["bucket"], item["name"])
+        try:
+            ensure_key_available(repo_root, key)
+            if dest.exists():
+                raise SourceError(f"Destination already exists in repo: {dest}")
+            install_materialized_github_skill(
+                repo_root=repo_root,
+                bucket=item["bucket"],
+                source_dir=source_dir,
+                repo=item["repo"],
+                skill_path=item["path"],
+                ref=item["ref"],
+                resolved_revision=item["resolved_revision"],
+                name=item["name"],
+                scope=scope,
+            )
+            results.append(
+                {
+                    "status": "installed",
+                    "key": key,
+                    "path": item["path"],
+                    "bucket": item["bucket"],
+                }
+            )
+            installed_total += 1
+        except SourceError as exc:
+            results.append(
+                {
+                    "status": "skipped",
+                    "key": key,
+                    "path": item["path"],
+                    "bucket": item["bucket"],
+                    "reason": str(exc),
+                }
+            )
+            skipped_total += 1
+
+    return {
+        "installed_total": installed_total,
+        "skipped_total": skipped_total,
+        "results": results,
+    }
+
+
 def print_records(records: list[dict]) -> None:
     if not records:
         print("No tracked skill sources.")
         return
     for record in records:
-        print(
+        line = (
             f"{record['key']} [{record['scope']}] {record['source_type']} -> {record['dest']} "
             f"(rev {record['resolved_revision']})"
         )
+        if record.get("deployments"):
+            deployment_bits = [
+                f"{target_id}={target['status']}"
+                for target_id, target in sorted(record["deployments"].items())
+            ]
+            line += " [" + ", ".join(deployment_bits) + "]"
+        print(line)
+
+
+def print_scan(scan: dict, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(scan, indent=2, sort_keys=True))
+        return
+
+    print(f"Repo: {scan['repo']} @ {scan['resolved_revision']}")
+    print("install plan:")
+    for bucket in ("claude", "codex", "shared"):
+        count = scan["install_plan"]["skills"][bucket]["count"]
+        if count:
+            print(f"  {bucket}: {count} skill(s)")
+    if scan["install_plan"]["agents"]["manual_total"]:
+        print(f"  agents: {scan['install_plan']['agents']['manual_total']} manual item(s)")
+
+    for bucket in ("claude", "codex", "shared", "unknown"):
+        items = scan["groups"].get(bucket, [])
+        if not items:
+            continue
+        print(f"{bucket}:")
+        for item in items:
+            print(f"  - {item['path']}")
+    if scan["agents"]:
+        print("agents:")
+        for item in scan["agents"]:
+            print(f"  - {item['path']}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -487,6 +877,31 @@ def parse_args() -> argparse.Namespace:
 
     list_parser = subparsers.add_parser("list", help="List tracked skill sources.")
     list_parser.add_argument("--scope", choices=["repo", "local", "all"], default="all")
+
+    scan_parser = subparsers.add_parser("scan-github", help="Scan a GitHub repo for installable skills.")
+    scan_parser.add_argument("--repo", help="GitHub repo in owner/repo form.")
+    scan_parser.add_argument("--url", help="GitHub repo URL.")
+    scan_parser.add_argument("--ref", default=DEFAULT_REF)
+    scan_parser.add_argument("--method", choices=["auto", "download", "git"], default="auto")
+    scan_parser.add_argument("--format", choices=["text", "json"], default="text")
+    scan_parser.add_argument("--include-unknown", action="store_true")
+
+    install_batch_parser = subparsers.add_parser(
+        "install-github-batch",
+        help="Install all recognized skills from selected GitHub scan groups.",
+    )
+    install_batch_parser.add_argument("--repo", help="GitHub repo in owner/repo form.")
+    install_batch_parser.add_argument("--url", help="GitHub repo URL.")
+    install_batch_parser.add_argument("--ref", default=DEFAULT_REF)
+    install_batch_parser.add_argument("--method", choices=["auto", "download", "git"], default="auto")
+    install_batch_parser.add_argument(
+        "--select",
+        action="append",
+        dest="selections",
+        choices=["recognized", "shared", "codex", "claude"],
+        help="Batch selection group. Defaults to recognized.",
+    )
+    install_batch_parser.add_argument("--scope", choices=sorted(VALID_SCOPES), default="repo")
 
     install_github_parser = subparsers.add_parser("install-github", help="Install a tracked skill from GitHub.")
     install_github_parser.add_argument("--bucket", choices=sorted(VALID_BUCKETS), required=True)
@@ -523,6 +938,53 @@ def main() -> int:
             if args.scope != "all":
                 records = [record for record in records if record["scope"] == args.scope]
             print_records(records)
+            return 0
+
+        if args.command == "scan-github":
+            scan = scan_github_repo(
+                repo=args.repo,
+                url=args.url,
+                ref=args.ref,
+                method=args.method,
+                include_unknown=args.include_unknown,
+            )
+            print_scan(scan, args.format)
+            return 0
+
+        if args.command == "install-github-batch":
+            scan = scan_github_repo(
+                repo=args.repo,
+                url=args.url,
+                ref=args.ref,
+                method=args.method,
+            )
+            repo_name = scan["repo"]
+            repo_ref = scan["ref"]
+            with materialize_github_repo(repo_name, repo_ref, method=args.method) as (source_repo_root, resolved_revision):
+                scan["resolved_revision"] = resolved_revision
+                for collection in ("skills", "agents"):
+                    for item in scan.get(collection, []):
+                        item["resolved_revision"] = resolved_revision
+                for group_items in scan.get("groups", {}).values():
+                    for item in group_items:
+                        item["resolved_revision"] = resolved_revision
+                result = install_scanned_skills(
+                    repo_root=repo_root,
+                    scan=scan,
+                    selections=args.selections,
+                    source_repo_root=source_repo_root,
+                    scope=args.scope,
+                )
+            print(
+                f"Installed {result['installed_total']} skill(s); skipped {result['skipped_total']}."
+            )
+            for item in result["results"]:
+                if item["status"] == "installed":
+                    print(f"  + {item['key']} <- {item['path']}")
+                else:
+                    print(f"  ~ {item['key']} ({item['reason']})")
+            print("Agents are inventory-only for now and were not installed.")
+            print("Run scripts/sync_skills.py --check before deploying outward.")
             return 0
 
         if args.command == "install-github":

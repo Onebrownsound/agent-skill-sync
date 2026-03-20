@@ -86,11 +86,49 @@ Typical commands:
 
 ```powershell
 python scripts/manage_skill_sources.py list
+python scripts/manage_skill_sources.py scan-github --repo owner/repo
+python scripts/manage_skill_sources.py scan-github --repo owner/repo --format json
+python scripts/manage_skill_sources.py install-github-batch --repo owner/repo --select shared --select claude
 python scripts/manage_skill_sources.py install-github --bucket codex --repo owner/repo --path path/to/skill
 python scripts/manage_skill_sources.py install-plugin --bucket codex --path C:\path\to\skill
 python scripts/manage_skill_sources.py update --key codex/skill-name
 python scripts/manage_skill_sources.py update-all
 ```
+
+## Scanning A Repo Before Import
+
+Use `scan-github` to inventory a repository before installing anything into this repo.
+
+It currently works in a batch-first way:
+
+- `skills/<name>` are treated as shared skills
+- `.claude/skills/<name>` and `claude/skills/<name>` are treated as Claude-specific skills
+- `.codex/skills/<name>` and `codex/skills/<name>` are treated as Codex-specific skills
+- agent assets are inventoried separately and shown as manual items
+- unknown layouts are hidden by default unless you pass `--include-unknown`
+
+Example:
+
+```powershell
+python scripts/manage_skill_sources.py scan-github --repo affaan-m/everything-claude-code
+```
+
+That gives you:
+
+- a grouped skill inventory
+- a batch-oriented install plan by bucket
+- a separate list of agent assets that need dedicated handling
+
+If the scan looks right, you can batch install the recognized skill groups:
+
+```powershell
+python scripts/manage_skill_sources.py install-github-batch --repo affaan-m/everything-claude-code --select claude --select shared
+```
+
+Current rule:
+
+- skills can be batch installed
+- agent assets are scanned and listed, but not auto-installed yet
 
 After install or update:
 

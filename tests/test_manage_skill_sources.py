@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import io
 import importlib.util
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 
@@ -188,6 +190,168 @@ class GithubInstallTests(unittest.TestCase):
             self.assertEqual(record["resolved_revision"], "def456")
 
 
+class ScanTests(unittest.TestCase):
+    def test_classify_skill_dir_maps_common_agent_layouts(self) -> None:
+        self.assertEqual(
+            manage_skill_sources.classify_repo_asset(".claude/skills/everything-claude-code", "SKILL.md")["bucket"],
+            "claude",
+        )
+        self.assertEqual(
+            manage_skill_sources.classify_repo_asset(".codex/skills/my-skill", "SKILL.md")["bucket"],
+            "codex",
+        )
+        self.assertEqual(
+            manage_skill_sources.classify_repo_asset("skills/configure-ecc", "SKILL.md")["bucket"],
+            "shared",
+        )
+        self.assertEqual(
+            manage_skill_sources.classify_repo_asset(".claude/agents/researcher", "researcher.md")["asset_type"],
+            "agent",
+        )
+        self.assertEqual(
+            manage_skill_sources.classify_repo_asset(".codex/agents/reviewer", "reviewer.toml")["asset_type"],
+            "agent",
+        )
+
+    def test_scan_materialized_repo_builds_batch_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = root / "external-repo"
+            make_skill(repo_root / ".claude" / "skills", "everything-claude-code")
+            make_skill(repo_root / "skills", "configure-ecc")
+            make_skill(repo_root / "skills", "continuous-learning")
+            (repo_root / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".claude" / "agents" / "researcher.md").write_text("---\nname: researcher\n---\n", encoding="utf-8")
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+
+            scan = manage_skill_sources.scan_materialized_repo(
+                repo_root=repo_root,
+                repo="affaan-m/everything-claude-code",
+                ref="main",
+                resolved_revision="scan123",
+            )
+
+            self.assertEqual(scan["repo"], "affaan-m/everything-claude-code")
+            self.assertEqual(scan["resolved_revision"], "scan123")
+            self.assertIn("claude", scan["groups"])
+            self.assertIn("shared", scan["groups"])
+
+            claude_paths = [item["path"] for item in scan["groups"]["claude"]]
+            shared_paths = [item["path"] for item in scan["groups"]["shared"]]
+
+            self.assertIn(".claude/skills/everything-claude-code", claude_paths)
+            self.assertIn("skills/configure-ecc", shared_paths)
+            self.assertIn("skills/continuous-learning", shared_paths)
+            self.assertEqual(scan["summary"]["claude"], 1)
+            self.assertEqual(scan["summary"]["shared"], 2)
+            self.assertEqual(len(scan["agents"]), 2)
+            self.assertEqual(scan["install_plan"]["skills"]["claude"]["count"], 1)
+            self.assertEqual(scan["install_plan"]["skills"]["shared"]["count"], 2)
+            self.assertEqual(scan["install_plan"]["skills"]["recognized_total"], 3)
+            self.assertEqual(scan["install_plan"]["agents"]["manual_total"], 2)
+
+    def test_scan_materialized_repo_excludes_unknown_by_default_but_can_include_them(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = root / "external-repo"
+            make_skill(repo_root / ".cursor" / "skills", "cursor-only")
+
+            default_scan = manage_skill_sources.scan_materialized_repo(
+                repo_root=repo_root,
+                repo="owner/repo",
+                ref="main",
+                resolved_revision="scan123",
+            )
+            verbose_scan = manage_skill_sources.scan_materialized_repo(
+                repo_root=repo_root,
+                repo="owner/repo",
+                ref="main",
+                resolved_revision="scan123",
+                include_unknown=True,
+            )
+
+            self.assertEqual(default_scan["summary"]["unknown"], 0)
+            self.assertEqual(verbose_scan["summary"]["unknown"], 1)
+
+    def test_install_scanned_skills_installs_selected_groups_only(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            source_repo = root / "external-repo"
+            make_skill(source_repo / ".claude" / "skills", "everything-claude-code")
+            make_skill(source_repo / "skills", "configure-ecc")
+            make_skill(source_repo / "skills", "continuous-learning")
+            (source_repo / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+            (source_repo / ".claude" / "agents" / "researcher.md").write_text("---\nname: researcher\n---\n", encoding="utf-8")
+
+            scan = manage_skill_sources.scan_materialized_repo(
+                repo_root=source_repo,
+                repo="owner/repo",
+                ref="main",
+                resolved_revision="scan123",
+            )
+            result = manage_skill_sources.install_scanned_skills(
+                repo_root=repo_root,
+                scan=scan,
+                selections=["claude", "shared"],
+                source_repo_root=source_repo,
+            )
+
+            self.assertEqual(result["installed_total"], 3)
+            self.assertEqual(result["skipped_total"], 0)
+            self.assertTrue((repo_root / "skills" / "claude" / "everything-claude-code" / "SKILL.md").is_file())
+            self.assertTrue((repo_root / "skills" / "shared" / "configure-ecc" / "SKILL.md").is_file())
+            self.assertTrue((repo_root / "skills" / "shared" / "continuous-learning" / "SKILL.md").is_file())
+            self.assertFalse((repo_root / "skills" / "claude" / "researcher").exists())
+
+    def test_install_scanned_skills_skips_existing_tracked_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            source_repo = root / "external-repo"
+            make_skill(source_repo / "skills", "configure-ecc")
+
+            existing = make_skill(repo_root / "skills" / "shared", "configure-ecc")
+            (existing / "notes.txt").write_text("existing", encoding="utf-8")
+            manage_skill_sources.save_registry(
+                manage_skill_sources.registry_path(repo_root, "repo"),
+                {
+                    "version": 1,
+                    "skills": {
+                        "shared/configure-ecc": {
+                            "name": "configure-ecc",
+                            "bucket": "shared",
+                            "dest": "skills/shared/configure-ecc",
+                            "scope": "repo",
+                            "source_type": "github",
+                            "source": {"repo": "owner/repo", "path": "skills/configure-ecc", "ref": "main"},
+                            "resolved_revision": "oldrev",
+                            "installed_at": "2026-03-20T00:00:00",
+                            "updated_at": "2026-03-20T00:00:00",
+                        }
+                    },
+                },
+            )
+
+            scan = manage_skill_sources.scan_materialized_repo(
+                repo_root=source_repo,
+                repo="owner/repo",
+                ref="main",
+                resolved_revision="scan123",
+            )
+            result = manage_skill_sources.install_scanned_skills(
+                repo_root=repo_root,
+                scan=scan,
+                selections=["shared"],
+                source_repo_root=source_repo,
+            )
+
+            self.assertEqual(result["installed_total"], 0)
+            self.assertEqual(result["skipped_total"], 1)
+            self.assertEqual(result["results"][0]["status"], "skipped")
+
+
 class RegistryTests(unittest.TestCase):
     def test_list_records_merges_repo_and_local_registries(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
@@ -218,6 +382,31 @@ class RegistryTests(unittest.TestCase):
 
 
 class CLITests(unittest.TestCase):
+    def test_print_scan_renders_install_plan_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            source_repo = root / "source-repo"
+            make_skill(source_repo / ".claude" / "skills", "everything-claude-code")
+            make_skill(source_repo / "skills", "configure-ecc")
+            (source_repo / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+            (source_repo / ".claude" / "agents" / "researcher.md").write_text("---\nname: researcher\n---\n", encoding="utf-8")
+
+            scan = manage_skill_sources.scan_materialized_repo(
+                repo_root=source_repo,
+                repo="owner/repo",
+                ref="main",
+                resolved_revision="scan123",
+            )
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                manage_skill_sources.print_scan(scan, "text")
+            output = buffer.getvalue()
+
+            self.assertIn("install plan:", output)
+            self.assertIn("claude: 1 skill(s)", output)
+            self.assertIn("shared: 1 skill(s)", output)
+            self.assertIn("agents: 1 manual item(s)", output)
+
     def test_cli_install_plugin_prints_install_message_and_writes_registry(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
             root = Path(root_dir)
