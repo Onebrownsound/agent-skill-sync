@@ -351,6 +351,79 @@ class ScanTests(unittest.TestCase):
             self.assertEqual(result["skipped_total"], 1)
             self.assertEqual(result["results"][0]["status"], "skipped")
 
+    def test_install_scanned_agents_requires_opt_in_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            source_repo = root / "external-repo"
+            (source_repo / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (source_repo / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+
+            scan = manage_skill_sources.scan_materialized_repo(
+                repo_root=source_repo,
+                repo="owner/repo",
+                ref="main",
+                resolved_revision="scan123",
+            )
+
+            result = manage_skill_sources.install_scanned_agents(
+                repo_root=repo_root,
+                scan=scan,
+                source_repo_root=source_repo,
+                copy_agents=False,
+            )
+            self.assertEqual(result["installed_total"], 0)
+            self.assertEqual(result["skipped_total"], 1)
+            self.assertFalse((repo_root / ".codex" / "agents" / "reviewer.toml").exists())
+
+            result = manage_skill_sources.install_scanned_agents(
+                repo_root=repo_root,
+                scan=scan,
+                source_repo_root=source_repo,
+                copy_agents=True,
+            )
+            self.assertEqual(result["installed_total"], 1)
+            self.assertTrue((repo_root / ".codex" / "agents" / "reviewer.toml").is_file())
+
+    def test_register_codex_agents_updates_config_toml_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+            config_toml = repo_root / ".codex" / "config.toml"
+            config_toml.write_text("[agents.existing]\npath = \".codex/agents/existing.toml\"\n", encoding="utf-8")
+
+            result = manage_skill_sources.register_codex_agents(
+                repo_root=repo_root,
+                agent_names=["reviewer"],
+            )
+
+            self.assertEqual(result["registered"], ["reviewer"])
+            content = config_toml.read_text(encoding="utf-8")
+            self.assertIn("[agents.existing]", content)
+            self.assertIn("[agents.reviewer]", content)
+            self.assertIn('path = ".codex/agents/reviewer.toml"', content)
+
+    def test_register_codex_agents_skips_unmanaged_conflicts(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+            config_toml = repo_root / ".codex" / "config.toml"
+            config_toml.write_text("[agents.reviewer]\npath = \"/some/other/location.toml\"\n", encoding="utf-8")
+
+            result = manage_skill_sources.register_codex_agents(
+                repo_root=repo_root,
+                agent_names=["reviewer"],
+            )
+
+            self.assertEqual(result["registered"], [])
+            self.assertEqual(result["skipped"][0]["name"], "reviewer")
+
 
 class RegistryTests(unittest.TestCase):
     def test_list_records_merges_repo_and_local_registries(self) -> None:

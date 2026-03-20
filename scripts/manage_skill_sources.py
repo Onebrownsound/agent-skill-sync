@@ -826,6 +826,111 @@ def install_scanned_skills(
     }
 
 
+def copy_file(source: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest)
+
+
+def agent_dest(repo_root: Path, bucket: str, relative_path: str) -> Path:
+    normalized = relative_path.replace("\\", "/").strip("/")
+    if bucket == "codex":
+        return repo_root / ".codex" / "agents" / Path(normalized).name
+    if bucket == "claude":
+        return repo_root / ".claude" / "agents" / Path(normalized).name
+    return repo_root / "agents" / Path(normalized).name
+
+
+def install_scanned_agents(
+    *,
+    repo_root: Path,
+    scan: dict,
+    source_repo_root: Path,
+    copy_agents: bool = False,
+) -> dict:
+    results: list[dict] = []
+    installed_total = 0
+    skipped_total = 0
+
+    for item in scan.get("agents", []):
+        dest = agent_dest(repo_root, item["bucket"], item["path"])
+        if not copy_agents:
+            results.append(
+                {
+                    "status": "skipped",
+                    "name": item["name"],
+                    "path": item["path"],
+                    "reason": "agent copy is opt-in",
+                }
+            )
+            skipped_total += 1
+            continue
+        if dest.exists():
+            results.append(
+                {
+                    "status": "skipped",
+                    "name": item["name"],
+                    "path": item["path"],
+                    "reason": f"destination already exists: {dest}",
+                }
+            )
+            skipped_total += 1
+            continue
+        copy_file(source_repo_root / item["path"], dest)
+        results.append({"status": "installed", "name": item["name"], "path": item["path"], "dest": str(dest)})
+        installed_total += 1
+
+    return {
+        "installed_total": installed_total,
+        "skipped_total": skipped_total,
+        "results": results,
+    }
+
+
+def codex_agent_file(repo_root: Path, name: str) -> Path:
+    return repo_root / ".codex" / "agents" / f"{name}.toml"
+
+
+def codex_config_path(repo_root: Path) -> Path:
+    return repo_root / ".codex" / "config.toml"
+
+
+def register_codex_agents(*, repo_root: Path, agent_names: list[str]) -> dict:
+    config_path = codex_config_path(repo_root)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    registered: list[str] = []
+    skipped: list[dict] = []
+    lines_to_append: list[str] = []
+
+    for name in agent_names:
+        agent_path = codex_agent_file(repo_root, name)
+        if not agent_path.is_file():
+            skipped.append({"name": name, "reason": f"missing agent file: {agent_path}"})
+            continue
+        section = f"[agents.{name}]"
+        managed_line = f'path = ".codex/agents/{name}.toml"'
+        if section in existing:
+            section_start = existing.index(section)
+            next_section = existing.find("\n[", section_start + 1)
+            block = existing[section_start:] if next_section == -1 else existing[section_start:next_section]
+            if managed_line in block:
+                registered.append(name)
+                continue
+            skipped.append({"name": name, "reason": "existing unmanaged agent config"})
+            continue
+        lines_to_append.extend(["", section, managed_line])
+        registered.append(name)
+
+    if lines_to_append:
+        new_content = existing.rstrip("\n")
+        if new_content:
+            new_content += "\n"
+        new_content += "\n".join(lines_to_append).lstrip("\n") + "\n"
+        config_path.write_text(new_content, encoding="utf-8")
+
+    return {"registered": registered, "skipped": skipped, "config": str(config_path)}
+
+
 def print_records(records: list[dict]) -> None:
     if not records:
         print("No tracked skill sources.")
@@ -902,6 +1007,8 @@ def parse_args() -> argparse.Namespace:
         help="Batch selection group. Defaults to recognized.",
     )
     install_batch_parser.add_argument("--scope", choices=sorted(VALID_SCOPES), default="repo")
+    install_batch_parser.add_argument("--copy-agents", action="store_true")
+    install_batch_parser.add_argument("--register-codex-agents", action="store_true")
 
     install_github_parser = subparsers.add_parser("install-github", help="Install a tracked skill from GitHub.")
     install_github_parser.add_argument("--bucket", choices=sorted(VALID_BUCKETS), required=True)
@@ -975,6 +1082,23 @@ def main() -> int:
                     source_repo_root=source_repo_root,
                     scope=args.scope,
                 )
+                agent_result = install_scanned_agents(
+                    repo_root=repo_root,
+                    scan=scan,
+                    source_repo_root=source_repo_root,
+                    copy_agents=args.copy_agents,
+                )
+            codex_agent_names = [
+                item["name"]
+                for item in scan.get("agents", [])
+                if item["bucket"] == "codex"
+            ]
+            register_result = {"registered": [], "skipped": []}
+            if args.register_codex_agents:
+                register_result = register_codex_agents(
+                    repo_root=repo_root,
+                    agent_names=codex_agent_names,
+                )
             print(
                 f"Installed {result['installed_total']} skill(s); skipped {result['skipped_total']}."
             )
@@ -983,7 +1107,16 @@ def main() -> int:
                     print(f"  + {item['key']} <- {item['path']}")
                 else:
                     print(f"  ~ {item['key']} ({item['reason']})")
-            print("Agents are inventory-only for now and were not installed.")
+            print(
+                f"Agent copy: installed {agent_result['installed_total']}; skipped {agent_result['skipped_total']}."
+            )
+            if args.register_codex_agents:
+                print(
+                    f"Codex agent registration: registered {len(register_result['registered'])}; "
+                    f"skipped {len(register_result['skipped'])}."
+                )
+            else:
+                print("Codex agent registration was skipped (opt-in).")
             print("Run scripts/sync_skills.py --check before deploying outward.")
             return 0
 

@@ -89,6 +89,7 @@ python scripts/manage_skill_sources.py list
 python scripts/manage_skill_sources.py scan-github --repo owner/repo
 python scripts/manage_skill_sources.py scan-github --repo owner/repo --format json
 python scripts/manage_skill_sources.py install-github-batch --repo owner/repo --select shared --select claude
+python scripts/manage_skill_sources.py install-github-batch --repo owner/repo --select codex --copy-agents --register-codex-agents
 python scripts/manage_skill_sources.py install-github --bucket codex --repo owner/repo --path path/to/skill
 python scripts/manage_skill_sources.py install-plugin --bucket codex --path C:\path\to\skill
 python scripts/manage_skill_sources.py update --key codex/skill-name
@@ -128,7 +129,23 @@ python scripts/manage_skill_sources.py install-github-batch --repo affaan-m/ever
 Current rule:
 
 - skills can be batch installed
-- agent assets are scanned and listed, but not auto-installed yet
+- agent assets are scanned and listed, but are opt-in for copy and registration
+
+## Agent Defaults
+
+Agents are handled more conservatively than skills.
+
+Default behavior:
+
+- scan inventories agent assets
+- batch install does not copy agents unless you pass `--copy-agents`
+- batch install does not modify `.codex/config.toml` unless you pass `--register-codex-agents`
+
+Codex-specific rule:
+
+- copied Codex agents go under `.codex/agents/`
+- registration in `.codex/config.toml` is opt-in
+- existing unmanaged `[agents.<name>]` entries are not overwritten
 
 After install or update:
 
