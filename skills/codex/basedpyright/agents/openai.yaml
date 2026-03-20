@@ -1,0 +1,4 @@
+interface:
+  display_name: "BasedPyright"
+  short_description: "Run and fix Python type checks"
+  default_prompt: "Use $basedpyright to run basedpyright in this repo, summarize the diagnostics, and apply safe typing fixes."

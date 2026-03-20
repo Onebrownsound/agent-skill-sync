@@ -1,0 +1,5 @@
+interface:
+  display_name: "Skill Sync"
+  short_description: "Sync local Codex and Claude skills"
+  default_prompt: "Use $skill-sync to check and apply local skill sync from this repo to my Codex and Claude installations."
+

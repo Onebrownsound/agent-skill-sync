@@ -1,0 +1,604 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+from datetime import datetime
+import hashlib
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+import uuid
+
+
+def detect_repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def detect_host() -> str:
+    if os.name == "nt":
+        return "windows"
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return "wsl"
+    try:
+        version_text = Path("/proc/version").read_text(encoding="utf-8").lower()
+    except OSError:
+        version_text = ""
+    if "microsoft" in version_text or "wsl" in version_text:
+        return "wsl"
+    return "linux"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Sync source-managed skills to local agent installs.")
+    parser.add_argument("--config", default="config/targets.local.json", help="Path to local target config.")
+    parser.add_argument("--host", choices=["auto", "windows", "wsl", "linux", "all"], default="auto")
+    parser.add_argument("--target", action="append", default=[], help="Limit to one or more target ids.")
+    parser.add_argument(
+        "--pull",
+        action="store_true",
+        help="Import valid live skills from matching target installs into this repo.",
+    )
+    parser.add_argument(
+        "--bucket",
+        choices=["shared", "codex", "claude"],
+        help="Destination bucket to use with --pull. Defaults to the target kind.",
+    )
+    parser.add_argument(
+        "--rollback",
+        help="Rollback a previous deployment ticket for matching host targets.",
+    )
+    parser.add_argument("--check", action="store_true", help="Explicit dry-run mode.")
+    parser.add_argument("--apply", action="store_true", help="Apply the sync plan.")
+    parser.add_argument("--clean", action="store_true", help="Remove previously managed skills not in source.")
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Disable the default backup step for destructive push changes.",
+    )
+    parser.add_argument("--quiet", action="store_true", help="Reduce output.")
+    return parser.parse_args()
+
+
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def iter_skill_dirs(root: Path) -> dict[str, Path]:
+    skills: dict[str, Path] = {}
+    if not root.is_dir():
+        return skills
+    for child in sorted(root.iterdir(), key=lambda item: item.name):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if not (child / "SKILL.md").is_file():
+            continue
+        skills[child.name] = child
+    return skills
+
+
+def collect_source_skills(repo_root: Path, catalog: dict[str, str], kind: str) -> dict[str, Path]:
+    skills: dict[str, Path] = {}
+    for bucket in ("shared", kind):
+        rel_path = catalog.get(bucket)
+        if not rel_path:
+            continue
+        for name, path in iter_skill_dirs(repo_root / rel_path).items():
+            skills[name] = path
+    return skills
+
+
+def file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(65536)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def dir_snapshot(root: Path) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    if not root.exists():
+        return snapshot
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        snapshot[rel] = file_hash(path)
+    return snapshot
+
+
+def load_manifest(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        return load_json(path)
+    except Exception:
+        return {}
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def copy_skill(source: Path, dest: Path) -> None:
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(source, dest)
+
+
+def timestamp_slug() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+
+
+def build_backup_path(backup_run_root: Path, name: str) -> Path:
+    candidate = backup_run_root / name
+    if not candidate.exists():
+        return candidate
+
+    suffix = 1
+    while True:
+        candidate = backup_run_root / f"{name}-{suffix}"
+        if not candidate.exists():
+            return candidate
+        suffix += 1
+
+
+def backup_skill(dest: Path, backup_run_root: Path) -> Path:
+    ensure_dir(backup_run_root)
+    backup_path = build_backup_path(backup_run_root, dest.name)
+    shutil.move(str(dest), str(backup_path))
+    return backup_path
+
+
+def generate_ticket() -> str:
+    return str(uuid.uuid4())
+
+
+def ticket_root(target_root: Path, ticket: str) -> Path:
+    return target_root / ".skill-sync-tickets" / ticket
+
+
+def ticket_metadata_path(target_root: Path, ticket: str) -> Path:
+    return ticket_root(target_root, ticket) / "ticket.json"
+
+
+def load_ticket_metadata(path: Path) -> dict:
+    return load_json(path)
+
+
+def plan_push_target(repo_root: Path, config: dict, target_id: str, target_cfg: dict, host: str) -> dict | None:
+    if not target_cfg.get("enabled", False):
+        return None
+    if host != "all" and target_cfg.get("host") != host:
+        return None
+    if target_cfg.get("kind") not in ("codex", "claude"):
+        raise ValueError(f"Unsupported target kind for {target_id}: {target_cfg.get('kind')}")
+
+    target_root = Path(target_cfg["path"])
+    manifest_name = config.get("manifest_filename", ".skill-sync-manifest.json")
+    manifest_path = target_root / manifest_name
+    manifest = load_manifest(manifest_path)
+
+    source_skills = collect_source_skills(repo_root, config["catalog"], target_cfg["kind"])
+    desired_names = sorted(source_skills)
+    managed_names = sorted(manifest.get("skills", []))
+
+    to_add: list[str] = []
+    to_update: list[str] = []
+    unchanged: list[str] = []
+    for name, source_path in source_skills.items():
+        dest_path = target_root / name
+        if not dest_path.exists():
+            to_add.append(name)
+            continue
+        if dir_snapshot(source_path) != dir_snapshot(dest_path):
+            to_update.append(name)
+        else:
+            unchanged.append(name)
+
+    to_remove = sorted(name for name in managed_names if name not in desired_names)
+
+    return {
+        "id": target_id,
+        "kind": target_cfg["kind"],
+        "host": target_cfg["host"],
+        "root": str(target_root),
+        "manifest": str(manifest_path),
+        "desired": desired_names,
+        "add": sorted(to_add),
+        "update": sorted(to_update),
+        "unchanged": sorted(unchanged),
+        "remove": to_remove,
+        "source_skills": {name: str(path) for name, path in source_skills.items()},
+    }
+
+
+def plan_pull_target(
+    repo_root: Path,
+    config: dict,
+    target_id: str,
+    target_cfg: dict,
+    host: str,
+    bucket: str | None = None,
+) -> dict | None:
+    if not target_cfg.get("enabled", False):
+        return None
+    if host != "all" and target_cfg.get("host") != host:
+        return None
+    if target_cfg.get("kind") not in ("codex", "claude"):
+        raise ValueError(f"Unsupported target kind for {target_id}: {target_cfg.get('kind')}")
+
+    bucket_name = bucket or target_cfg["kind"]
+    bucket_rel = config["catalog"].get(bucket_name)
+    if not bucket_rel:
+        raise ValueError(f"Missing catalog bucket '{bucket_name}'")
+
+    target_root = Path(target_cfg["path"])
+    repo_bucket_root = repo_root / bucket_rel
+    live_skills = iter_skill_dirs(target_root)
+
+    to_add: list[str] = []
+    unchanged: list[str] = []
+    conflict: list[str] = []
+    for name, source_path in live_skills.items():
+        dest_path = repo_bucket_root / name
+        if not dest_path.exists():
+            to_add.append(name)
+            continue
+        if dir_snapshot(source_path) == dir_snapshot(dest_path):
+            unchanged.append(name)
+        else:
+            conflict.append(name)
+
+    return {
+        "id": target_id,
+        "kind": target_cfg["kind"],
+        "host": target_cfg["host"],
+        "root": str(target_root),
+        "bucket": bucket_name,
+        "bucket_root": str(repo_bucket_root),
+        "add": sorted(to_add),
+        "conflict": sorted(conflict),
+        "unchanged": sorted(unchanged),
+        "source_skills": {name: str(path) for name, path in live_skills.items()},
+    }
+
+
+def plan_rollback_target(config: dict, target_id: str, target_cfg: dict, host: str, ticket: str) -> dict | None:
+    if host != "all" and target_cfg.get("host") != host:
+        return None
+    if target_cfg.get("kind") not in ("codex", "claude"):
+        raise ValueError(f"Unsupported target kind for {target_id}: {target_cfg.get('kind')}")
+
+    target_root = Path(target_cfg["path"])
+    metadata_path = ticket_metadata_path(target_root, ticket)
+    if not metadata_path.is_file():
+        return None
+
+    metadata = load_ticket_metadata(metadata_path)
+    return {
+        "id": target_id,
+        "kind": target_cfg["kind"],
+        "host": target_cfg["host"],
+        "root": str(target_root),
+        "ticket": ticket,
+        "ticket_root": str(metadata_path.parent),
+        "metadata_path": str(metadata_path),
+        "added": sorted(metadata.get("added", [])),
+        "updated": sorted(metadata.get("updated", [])),
+        "removed": sorted(metadata.get("removed", [])),
+        "backed_up": sorted(metadata.get("backed_up", [])),
+        "rollback_ready": bool(metadata.get("rollback_ready", False)),
+        "previous_manifest": metadata.get("previous_manifest"),
+        "manifest": str(target_root / config.get("manifest_filename", ".skill-sync-manifest.json")),
+        "source_skills": metadata.get("source_skills", {}),
+    }
+
+
+def apply_target(plan: dict, clean: bool, backup: bool = True, ticket: str | None = None) -> dict:
+    target_root = Path(plan["root"])
+    manifest_path = Path(plan["manifest"])
+    ensure_dir(target_root)
+
+    source_skills = {name: Path(path) for name, path in plan["source_skills"].items()}
+    backup_run_root: Path | None = None
+    backup_records: list[tuple[str, str]] = []
+    previous_manifest = load_manifest(manifest_path) if manifest_path.exists() else None
+    wrote_ticket = False
+
+    changed = bool(plan["add"] or plan["update"] or (clean and plan["remove"]))
+    ticket_value = ticket if changed else None
+    ticket_dir: Path | None = None
+    if ticket_value:
+        ticket_dir = ticket_root(target_root, ticket_value)
+
+    if backup and (plan["update"] or (clean and plan["remove"])):
+        if ticket_dir is not None:
+            backup_run_root = ticket_dir / "skills"
+        else:
+            backup_run_root = target_root / ".skill-sync-backups" / timestamp_slug()
+
+    for name in plan["add"]:
+        copy_skill(source_skills[name], target_root / name)
+
+    for name in plan["update"]:
+        dest_path = target_root / name
+        if backup and dest_path.exists():
+            assert backup_run_root is not None
+            backup_path = backup_skill(dest_path, backup_run_root)
+            backup_records.append((name, str(backup_path)))
+        copy_skill(source_skills[name], dest_path)
+
+    if clean:
+        for name in plan["remove"]:
+            skill_dir = target_root / name
+            if skill_dir.exists():
+                if backup:
+                    assert backup_run_root is not None
+                    backup_path = backup_skill(skill_dir, backup_run_root)
+                    backup_records.append((name, str(backup_path)))
+                else:
+                    shutil.rmtree(skill_dir)
+
+    write_json(
+        manifest_path,
+        {
+            "version": 1,
+            "target": plan["id"],
+            "kind": plan["kind"],
+            "skills": plan["desired"],
+        },
+    )
+
+    if ticket_dir is not None:
+        ensure_dir(ticket_dir)
+        write_json(
+            ticket_dir / "ticket.json",
+            {
+                "version": 1,
+                "ticket": ticket_value,
+                "timestamp": datetime.now().isoformat(),
+                "target": plan["id"],
+                "kind": plan["kind"],
+                "root": plan["root"],
+                "added": plan["add"],
+                "updated": plan["update"],
+                "removed": plan["remove"] if clean else [],
+                "backed_up": [name for name, _ in backup_records],
+                "backup_root": str(backup_run_root) if backup_run_root else None,
+                "rollback_ready": backup or not (plan["update"] or (clean and plan["remove"])),
+                "previous_manifest": previous_manifest,
+                "source_skills": plan["source_skills"],
+            },
+        )
+        wrote_ticket = True
+    return {
+        "backup_root": str(backup_run_root) if backup_run_root else None,
+        "backups": backup_records,
+        "ticket": ticket_value,
+        "ticket_root": str(ticket_dir) if ticket_dir else None,
+        "wrote_ticket": wrote_ticket,
+    }
+
+
+def apply_pull_target(plan: dict) -> None:
+    bucket_root = Path(plan["bucket_root"])
+    ensure_dir(bucket_root)
+    source_skills = {name: Path(path) for name, path in plan["source_skills"].items()}
+
+    for name in plan["add"]:
+        copy_skill(source_skills[name], bucket_root / name)
+
+
+def apply_rollback_target(plan: dict) -> None:
+    target_root = Path(plan["root"])
+    metadata_path = Path(plan["metadata_path"])
+    metadata = load_ticket_metadata(metadata_path)
+    backup_root_value = metadata.get("backup_root")
+    backup_root = Path(backup_root_value) if backup_root_value else None
+    manifest_path = Path(plan["manifest"])
+
+    for name in plan["added"]:
+        dest = target_root / name
+        if dest.exists():
+            shutil.rmtree(dest)
+
+    for name in sorted(set(plan["updated"] + plan["removed"])):
+        if backup_root is None:
+            continue
+        backup_skill_dir = backup_root / name
+        if not backup_skill_dir.exists():
+            continue
+        dest = target_root / name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(backup_skill_dir, dest)
+
+    previous_manifest = plan["previous_manifest"]
+    if previous_manifest is None:
+        if manifest_path.exists():
+            manifest_path.unlink()
+    else:
+        write_json(manifest_path, previous_manifest)
+
+
+def print_push_plan(plan: dict) -> None:
+    print(f"[{plan['id']}] {plan['kind']} -> {plan['root']}")
+    print(f"  add: {len(plan['add'])}")
+    if plan["add"]:
+        for name in plan["add"]:
+            print(f"    + {name}")
+    print(f"  update: {len(plan['update'])}")
+    if plan["update"]:
+        for name in plan["update"]:
+            print(f"    ~ {name}")
+    print(f"  remove: {len(plan['remove'])}")
+    if plan["remove"]:
+        for name in plan["remove"]:
+            print(f"    - {name}")
+    print(f"  unchanged: {len(plan['unchanged'])}")
+
+
+def print_pull_plan(plan: dict) -> None:
+    print(f"[{plan['id']}] import {plan['kind']} -> {plan['bucket_root']}")
+    print(f"  add: {len(plan['add'])}")
+    if plan["add"]:
+        for name in plan["add"]:
+            print(f"    + {name}")
+    print(f"  conflict: {len(plan['conflict'])}")
+    if plan["conflict"]:
+        for name in plan["conflict"]:
+            print(f"    ! {name}")
+    print(f"  unchanged: {len(plan['unchanged'])}")
+
+
+def print_rollback_plan(plan: dict) -> None:
+    print(f"[{plan['id']}] rollback {plan['ticket']} -> {plan['root']}")
+    print(f"  remove added: {len(plan['added'])}")
+    if plan["added"]:
+        for name in plan["added"]:
+            print(f"    - {name}")
+    print(f"  restore backed up: {len(plan['backed_up'])}")
+    if plan["backed_up"]:
+        for name in plan["backed_up"]:
+            print(f"    + {name}")
+    print(f"  rollback ready: {'yes' if plan['rollback_ready'] else 'no'}")
+
+
+def main() -> int:
+    args = parse_args()
+    repo_root = detect_repo_root()
+    host = detect_host() if args.host == "auto" else args.host
+    config_path = (repo_root / args.config).resolve()
+
+    if args.pull and args.rollback:
+        print("--pull and --rollback cannot be used together.", file=sys.stderr)
+        return 2
+    if args.pull and args.clean:
+        print("--clean is only supported for push syncs.", file=sys.stderr)
+        return 2
+    if args.pull and args.no_backup:
+        print("--no-backup only applies to push syncs.", file=sys.stderr)
+        return 2
+    if args.rollback and args.clean:
+        print("--clean cannot be used with --rollback.", file=sys.stderr)
+        return 2
+    if args.rollback and args.bucket:
+        print("--bucket cannot be used with --rollback.", file=sys.stderr)
+        return 2
+    if args.rollback and args.no_backup:
+        print("--no-backup cannot be used with --rollback.", file=sys.stderr)
+        return 2
+    if args.bucket and not args.pull:
+        print("--bucket can only be used with --pull.", file=sys.stderr)
+        return 2
+
+    if not config_path.is_file():
+        print(f"Missing config file: {config_path}", file=sys.stderr)
+        print("Copy config/targets.example.json to config/targets.local.json and edit the target paths.", file=sys.stderr)
+        return 2
+
+    config = load_json(config_path)
+    targets = config.get("targets", {})
+    if not targets:
+        print("No targets configured.", file=sys.stderr)
+        return 2
+
+    target_filter = set(args.target)
+    selected = []
+    for target_id, target_cfg in targets.items():
+        if target_filter and target_id not in target_filter:
+            continue
+        if args.rollback:
+            plan = plan_rollback_target(config, target_id, target_cfg, host, ticket=args.rollback)
+        elif args.pull:
+            plan = plan_pull_target(repo_root, config, target_id, target_cfg, host, bucket=args.bucket)
+        else:
+            plan = plan_push_target(repo_root, config, target_id, target_cfg, host)
+        if plan:
+            selected.append(plan)
+
+    if not selected:
+        if args.rollback:
+            print(f"No rollback data found for ticket '{args.rollback}' on host '{host}'.")
+            return 0
+        print(f"No enabled targets matched host '{host}'.")
+        return 0
+
+    print(f"Repo root: {repo_root}")
+    print(f"Host: {host}")
+    if args.rollback:
+        mode_name = "rollback"
+    elif args.pull:
+        mode_name = "pull"
+    else:
+        mode_name = "push"
+    print(f"Mode: {mode_name}/{ 'apply' if args.apply else 'check' }")
+    print()
+
+    for plan in selected:
+        if args.rollback:
+            print_rollback_plan(plan)
+        elif args.pull:
+            print_pull_plan(plan)
+        else:
+            print_push_plan(plan)
+        print()
+
+    if args.apply:
+        if args.rollback:
+            blocked = [plan["id"] for plan in selected if not plan["rollback_ready"]]
+            if blocked:
+                print(
+                    "Rollback unavailable for ticket on target(s) without backups: "
+                    + ", ".join(blocked),
+                    file=sys.stderr,
+                )
+                return 2
+            for plan in selected:
+                apply_rollback_target(plan)
+            print(f"Rollback complete for ticket {args.rollback}.")
+        elif args.pull:
+            for plan in selected:
+                apply_pull_target(plan)
+            if any(plan["conflict"] for plan in selected):
+                print("Import complete. Conflicting repo skills were left unchanged.")
+            else:
+                print("Import complete.")
+        else:
+            backup_runs: list[dict] = []
+            deployment_ticket = generate_ticket() if any(
+                plan["add"] or plan["update"] or (args.clean and plan["remove"]) for plan in selected
+            ) else None
+            for plan in selected:
+                result = apply_target(
+                    plan,
+                    clean=args.clean,
+                    backup=not args.no_backup,
+                    ticket=deployment_ticket,
+                )
+                if result["backups"]:
+                    backup_runs.append({"target": plan["id"], **result})
+            if deployment_ticket:
+                print(f"Ticket: {deployment_ticket}")
+            if backup_runs:
+                for backup_run in backup_runs:
+                    print(f"Backups for {backup_run['target']}: {backup_run['backup_root']}")
+            print("Sync complete.")
+    else:
+        print("Dry run only. Re-run with --apply to make changes.")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

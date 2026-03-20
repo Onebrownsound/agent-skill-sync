@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "manifest_filename": ".skill-sync-manifest.json",
+  "catalog": {
+    "shared": "skills/shared",
+    "codex": "skills/codex",
+    "claude": "skills/claude"
+  },
+  "targets": {
+    "windows_codex": {
+      "enabled": true,
+      "host": "windows",
+      "kind": "codex",
+      "path": "C:/Users/your-user/.codex/skills"
+    },
+    "wsl_codex": {
+      "enabled": true,
+      "host": "wsl",
+      "kind": "codex",
+      "path": "/home/your-user/.codex/skills"
+    },
+    "wsl_claude": {
+      "enabled": true,
+      "host": "wsl",
+      "kind": "claude",
+      "path": "/home/your-user/.claude/skills"
+    },
+    "windows_claude": {
+      "enabled": false,
+      "host": "windows",
+      "kind": "claude",
+      "path": "C:/Users/your-user/.claude/skills"
+    }
+  }
+}
+
