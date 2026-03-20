@@ -385,7 +385,7 @@ class ScanTests(unittest.TestCase):
             self.assertEqual(result["installed_total"], 1)
             self.assertTrue((repo_root / ".codex" / "agents" / "reviewer.toml").is_file())
 
-    def test_register_codex_agents_updates_config_toml_safely(self) -> None:
+    def test_register_codex_agents_writes_managed_block_and_preserves_manual_entries(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
             root = Path(root_dir)
             repo_root = prepare_repo_root(root)
@@ -403,8 +403,209 @@ class ScanTests(unittest.TestCase):
             self.assertEqual(result["registered"], ["reviewer"])
             content = config_toml.read_text(encoding="utf-8")
             self.assertIn("[agents.existing]", content)
+            self.assertIn(manage_skill_sources.MANAGED_AGENTS_BEGIN, content)
+            self.assertIn(manage_skill_sources.MANAGED_AGENTS_END, content)
             self.assertIn("[agents.reviewer]", content)
             self.assertIn('path = ".codex/agents/reviewer.toml"', content)
+            self.assertLess(content.index("[agents.existing]"), content.index(manage_skill_sources.MANAGED_AGENTS_BEGIN))
+
+    def test_register_codex_agents_merges_into_existing_managed_block(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+            (repo_root / ".codex" / "agents" / "docs.toml").write_text("[agent]\n", encoding="utf-8")
+            config_toml = repo_root / ".codex" / "config.toml"
+            config_toml.write_text(
+                "\n".join(
+                    [
+                        "[agents.existing]",
+                        'path = ".codex/agents/existing.toml"',
+                        "",
+                        manage_skill_sources.MANAGED_AGENTS_BEGIN,
+                        "[agents.old]",
+                        'path = ".codex/agents/old.toml"',
+                        manage_skill_sources.MANAGED_AGENTS_END,
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = manage_skill_sources.register_codex_agents(
+                repo_root=repo_root,
+                agent_names=["reviewer", "docs"],
+            )
+
+            self.assertEqual(result["registered"], ["reviewer", "docs"])
+            content = config_toml.read_text(encoding="utf-8")
+            self.assertIn("[agents.existing]", content)
+            self.assertIn("[agents.old]", content)
+            self.assertIn("[agents.reviewer]", content)
+            self.assertIn("[agents.docs]", content)
+            self.assertEqual(content.count(manage_skill_sources.MANAGED_AGENTS_BEGIN), 1)
+            self.assertEqual(content.count(manage_skill_sources.MANAGED_AGENTS_END), 1)
+
+    def test_register_codex_agents_migrates_existing_managed_section_into_block(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+            config_toml = repo_root / ".codex" / "config.toml"
+            config_toml.write_text(
+                "[agents.reviewer]\npath = \".codex/agents/reviewer.toml\"\n",
+                encoding="utf-8",
+            )
+
+            result = manage_skill_sources.register_codex_agents(
+                repo_root=repo_root,
+                agent_names=["reviewer"],
+            )
+
+            self.assertEqual(result["registered"], ["reviewer"])
+            content = config_toml.read_text(encoding="utf-8")
+            self.assertIn(manage_skill_sources.MANAGED_AGENTS_BEGIN, content)
+            self.assertIn(manage_skill_sources.MANAGED_AGENTS_END, content)
+            self.assertEqual(content.count("[agents.reviewer]"), 1)
+
+    def test_register_codex_agents_creates_backup_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+            config_toml = repo_root / ".codex" / "config.toml"
+            original = "[agents.existing]\npath = \".codex/agents/existing.toml\"\n"
+            config_toml.write_text(original, encoding="utf-8")
+
+            result = manage_skill_sources.register_codex_agents(
+                repo_root=repo_root,
+                agent_names=["reviewer"],
+            )
+
+            backup_path = Path(result["backup"])
+            self.assertTrue(backup_path.is_file())
+            self.assertEqual(backup_path.read_text(encoding="utf-8"), original)
+
+    def test_register_codex_agents_does_not_create_backup_when_creating_new_config(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+
+            result = manage_skill_sources.register_codex_agents(
+                repo_root=repo_root,
+                agent_names=["reviewer"],
+            )
+
+            self.assertIsNone(result["backup"])
+            self.assertFalse(manage_skill_sources.codex_config_backup_path(repo_root).exists())
+
+    def test_register_codex_agents_noop_does_not_rewrite_or_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+            config_toml = repo_root / ".codex" / "config.toml"
+            content = (
+                manage_skill_sources.MANAGED_AGENTS_BEGIN
+                + "\n[agents.reviewer]\npath = \".codex/agents/reviewer.toml\"\n"
+                + manage_skill_sources.MANAGED_AGENTS_END
+                + "\n"
+            )
+            config_toml.write_text(content, encoding="utf-8")
+
+            result = manage_skill_sources.register_codex_agents(
+                repo_root=repo_root,
+                agent_names=["reviewer"],
+            )
+
+            self.assertEqual(result["registered"], ["reviewer"])
+            self.assertIsNone(result["backup"])
+            self.assertEqual(config_toml.read_text(encoding="utf-8"), content)
+            self.assertFalse(manage_skill_sources.codex_config_backup_path(repo_root).exists())
+
+    def test_register_codex_agents_deduplicates_requested_names(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+
+            result = manage_skill_sources.register_codex_agents(
+                repo_root=repo_root,
+                agent_names=["reviewer", "reviewer"],
+            )
+
+            self.assertEqual(result["registered"], ["reviewer"])
+            content = (repo_root / ".codex" / "config.toml").read_text(encoding="utf-8")
+            self.assertEqual(content.count("[agents.reviewer]"), 1)
+
+    def test_register_codex_agents_preserves_suffix_order_around_managed_block(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+            config_toml = repo_root / ".codex" / "config.toml"
+            config_toml.write_text(
+                "\n".join(
+                    [
+                        "[agents.before]",
+                        'path = ".codex/agents/before.toml"',
+                        "",
+                        manage_skill_sources.MANAGED_AGENTS_BEGIN,
+                        "[agents.old]",
+                        'path = ".codex/agents/old.toml"',
+                        manage_skill_sources.MANAGED_AGENTS_END,
+                        "",
+                        "[agents.after]",
+                        'path = ".codex/agents/after.toml"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            manage_skill_sources.register_codex_agents(
+                repo_root=repo_root,
+                agent_names=["reviewer"],
+            )
+
+            content = config_toml.read_text(encoding="utf-8")
+            self.assertLess(content.index("[agents.before]"), content.index(manage_skill_sources.MANAGED_AGENTS_BEGIN))
+            self.assertLess(content.index(manage_skill_sources.MANAGED_AGENTS_END), content.index("[agents.after]"))
+
+    def test_register_codex_agents_rejects_invalid_managed_markers_without_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+            config_toml = repo_root / ".codex" / "config.toml"
+            invalid = manage_skill_sources.MANAGED_AGENTS_BEGIN + "\n[agents.old]\n"
+            config_toml.write_text(invalid, encoding="utf-8")
+
+            with self.assertRaises(manage_skill_sources.SourceError):
+                manage_skill_sources.register_codex_agents(
+                    repo_root=repo_root,
+                    agent_names=["reviewer"],
+                )
+
+            self.assertEqual(config_toml.read_text(encoding="utf-8"), invalid)
+            self.assertFalse(manage_skill_sources.codex_config_backup_path(repo_root).exists())
 
     def test_register_codex_agents_skips_unmanaged_conflicts(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
@@ -423,6 +624,8 @@ class ScanTests(unittest.TestCase):
 
             self.assertEqual(result["registered"], [])
             self.assertEqual(result["skipped"][0]["name"], "reviewer")
+            content = config_toml.read_text(encoding="utf-8")
+            self.assertNotIn(manage_skill_sources.MANAGED_AGENTS_BEGIN, content)
 
 
 class RegistryTests(unittest.TestCase):

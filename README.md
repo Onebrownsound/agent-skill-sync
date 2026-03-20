@@ -145,7 +145,16 @@ Codex-specific rule:
 
 - copied Codex agents go under `.codex/agents/`
 - registration in `.codex/config.toml` is opt-in
+- tool-managed Codex agent entries live inside a dedicated managed block in `.codex/config.toml`
+- new registrations merge into that managed block so partial imports do not silently unregister older managed agents
+- if registration rewrites `.codex/config.toml`, the previous file is backed up to `.codex/config.toml.agent-skill-sync.bak`
 - existing unmanaged `[agents.<name>]` entries are not overwritten
+
+Example:
+
+```powershell
+python scripts/manage_skill_sources.py install-github-batch --repo affaan-m/everything-claude-code --select shared --select claude --copy-agents --register-codex-agents
+```
 
 After install or update:
 

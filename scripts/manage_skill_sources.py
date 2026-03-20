@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,8 @@ VALID_BUCKETS = {"shared", "codex", "claude"}
 VALID_SCOPES = {"repo", "local"}
 DEFAULT_REF = "main"
 DEPLOY_STATE_FILENAME = "deploy-state.local.json"
+MANAGED_AGENTS_BEGIN = "# BEGIN agent-skill-sync managed agents"
+MANAGED_AGENTS_END = "# END agent-skill-sync managed agents"
 
 
 class SourceError(Exception):
@@ -894,41 +897,151 @@ def codex_config_path(repo_root: Path) -> Path:
     return repo_root / ".codex" / "config.toml"
 
 
+def codex_config_backup_path(repo_root: Path) -> Path:
+    return repo_root / ".codex" / "config.toml.agent-skill-sync.bak"
+
+
+def expected_codex_agent_config_line(name: str) -> str:
+    return f'path = ".codex/agents/{name}.toml"'
+
+
+def render_codex_agent_block(agent_names: list[str]) -> str:
+    lines = [MANAGED_AGENTS_BEGIN]
+    for index, name in enumerate(agent_names):
+        if index:
+            lines.append("")
+        lines.append(f"[agents.{name}]")
+        lines.append(expected_codex_agent_config_line(name))
+    lines.append(MANAGED_AGENTS_END)
+    return "\n".join(lines)
+
+
+def split_managed_codex_agent_block(content: str) -> tuple[str, str, str]:
+    start = content.find(MANAGED_AGENTS_BEGIN)
+    end = content.find(MANAGED_AGENTS_END)
+    if start == -1 and end == -1:
+        return content, "", ""
+    if start == -1 or end == -1 or end < start:
+        raise SourceError("Invalid managed Codex agent block markers in .codex/config.toml")
+    end += len(MANAGED_AGENTS_END)
+    return content[:start], content[start:end], content[end:]
+
+
+def managed_codex_agent_names(block: str) -> list[str]:
+    pattern = re.compile(r"(?m)^\[agents\.([^\]]+)\]\s*$")
+    return [match.group(1) for match in pattern.finditer(block)]
+
+
+def find_codex_agent_section(content: str, name: str) -> tuple[int, int, str] | None:
+    pattern = re.compile(
+        rf"(?ms)^[ \t]*\[agents\.{re.escape(name)}\][ \t]*\n.*?(?=^[ \t]*\[|\Z)"
+    )
+    match = pattern.search(content)
+    if not match:
+        return None
+    return match.start(), match.end(), match.group(0)
+
+
+def is_exact_managed_codex_agent_section(section: str, name: str) -> bool:
+    lines = [line.strip() for line in section.splitlines() if line.strip()]
+    return lines == [f"[agents.{name}]", expected_codex_agent_config_line(name)]
+
+
+def merge_agent_names(existing_names: list[str], requested_names: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for name in existing_names + requested_names:
+        if name in seen:
+            continue
+        seen.add(name)
+        merged.append(name)
+    return merged
+
+
+def find_agent_section_in_content(content: str, name: str) -> tuple[str, str] | None:
+    section_match = find_codex_agent_section(content, name)
+    if not section_match:
+        return None
+    section_start, section_end, section = section_match
+    updated = content[:section_start] + content[section_end:]
+    return updated, section
+
+
+def normalize_content_edges(prefix: str, suffix: str) -> tuple[str, str]:
+    prefix_rendered = prefix.rstrip()
+    suffix_rendered = suffix.lstrip()
+    return prefix_rendered, suffix_rendered
+
+
+def backup_file(source: Path, backup: Path) -> None:
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, backup)
+
+
 def register_codex_agents(*, repo_root: Path, agent_names: list[str]) -> dict:
     config_path = codex_config_path(repo_root)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    prefix, managed_block, suffix = split_managed_codex_agent_block(existing)
+    existing_managed = managed_codex_agent_names(managed_block)
     registered: list[str] = []
     skipped: list[dict] = []
-    lines_to_append: list[str] = []
+    requested_managed: list[str] = []
+    seen_names: set[str] = set()
 
     for name in agent_names:
+        if name in seen_names:
+            continue
+        seen_names.add(name)
         agent_path = codex_agent_file(repo_root, name)
         if not agent_path.is_file():
             skipped.append({"name": name, "reason": f"missing agent file: {agent_path}"})
             continue
-        section = f"[agents.{name}]"
-        managed_line = f'path = ".codex/agents/{name}.toml"'
-        if section in existing:
-            section_start = existing.index(section)
-            next_section = existing.find("\n[", section_start + 1)
-            block = existing[section_start:] if next_section == -1 else existing[section_start:next_section]
-            if managed_line in block:
-                registered.append(name)
-                continue
-            skipped.append({"name": name, "reason": "existing unmanaged agent config"})
-            continue
-        lines_to_append.extend(["", section, managed_line])
-        registered.append(name)
 
-    if lines_to_append:
-        new_content = existing.rstrip("\n")
-        if new_content:
-            new_content += "\n"
-        new_content += "\n".join(lines_to_append).lstrip("\n") + "\n"
+        prefix_match = find_agent_section_in_content(prefix, name)
+        if prefix_match:
+            updated_prefix, section = prefix_match
+            if not is_exact_managed_codex_agent_section(section, name):
+                skipped.append({"name": name, "reason": "existing unmanaged agent config"})
+                continue
+            prefix = updated_prefix
+        else:
+            suffix_match = find_agent_section_in_content(suffix, name)
+            if suffix_match:
+                updated_suffix, section = suffix_match
+                if not is_exact_managed_codex_agent_section(section, name):
+                    skipped.append({"name": name, "reason": "existing unmanaged agent config"})
+                    continue
+                suffix = updated_suffix
+
+        registered.append(name)
+        requested_managed.append(name)
+
+    final_managed = merge_agent_names(existing_managed, requested_managed)
+    parts: list[str] = []
+    prefix_rendered, suffix_rendered = normalize_content_edges(prefix, suffix)
+    if prefix_rendered:
+        parts.append(prefix_rendered)
+    if final_managed:
+        parts.append(render_codex_agent_block(final_managed))
+    if suffix_rendered:
+        parts.append(suffix_rendered)
+    new_content = "\n\n".join(parts)
+    if new_content:
+        new_content += "\n"
+    backup_path: Path | None = None
+    if new_content != existing:
+        if config_path.exists():
+            backup_path = codex_config_backup_path(repo_root)
+            backup_file(config_path, backup_path)
         config_path.write_text(new_content, encoding="utf-8")
 
-    return {"registered": registered, "skipped": skipped, "config": str(config_path)}
+    return {
+        "registered": registered,
+        "skipped": skipped,
+        "config": str(config_path),
+        "backup": str(backup_path) if backup_path else None,
+    }
 
 
 def print_records(records: list[dict]) -> None:
@@ -1115,6 +1228,8 @@ def main() -> int:
                     f"Codex agent registration: registered {len(register_result['registered'])}; "
                     f"skipped {len(register_result['skipped'])}."
                 )
+                if register_result.get("backup"):
+                    print(f"  config backup: {register_result['backup']}")
             else:
                 print("Codex agent registration was skipped (opt-in).")
             print("Run scripts/sync_skills.py --check before deploying outward.")
