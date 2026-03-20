@@ -216,6 +216,45 @@ class RegistryTests(unittest.TestCase):
             keys = [record["key"] for record in records]
             self.assertEqual(sorted(keys), ["codex/demo-plugin", "shared/gh-skill"])
 
+    def test_list_records_includes_target_deployment_status_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            github_skill = make_skill(root / "github", "gh-skill")
+
+            manage_skill_sources.install_materialized_github_skill(
+                repo_root=repo_root,
+                bucket="shared",
+                source_dir=github_skill,
+                repo="owner/repo",
+                skill_path="skills/shared/gh-skill",
+                ref="main",
+                resolved_revision="abc123",
+            )
+
+            manage_skill_sources.save_registry(
+                repo_root / "config" / "deploy-state.local.json",
+                {
+                    "version": 1,
+                    "targets": {
+                        "windows_codex": {
+                            "skills": {
+                                "shared/gh-skill": {
+                                    "status": "up_to_date",
+                                    "target_up_to_date": True,
+                                }
+                            }
+                        }
+                    },
+                },
+            )
+
+            records = manage_skill_sources.list_records(repo_root)
+            record = next(item for item in records if item["key"] == "shared/gh-skill")
+
+            self.assertIn("deployments", record)
+            self.assertEqual(record["deployments"]["windows_codex"]["status"], "up_to_date")
+
 
 class CLITests(unittest.TestCase):
     def test_cli_install_plugin_prints_install_message_and_writes_registry(self) -> None:

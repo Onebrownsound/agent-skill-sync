@@ -22,6 +22,7 @@ import zipfile
 VALID_BUCKETS = {"shared", "codex", "claude"}
 VALID_SCOPES = {"repo", "local"}
 DEFAULT_REF = "main"
+DEPLOY_STATE_FILENAME = "deploy-state.local.json"
 
 
 class SourceError(Exception):
@@ -56,6 +57,19 @@ def load_registry(path: Path) -> dict:
 def save_registry(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def deploy_state_path(repo_root: Path) -> Path:
+    return repo_root / "config" / DEPLOY_STATE_FILENAME
+
+
+def load_deploy_state(path: Path) -> dict:
+    if not path.is_file():
+        return {"version": 1, "targets": {}}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if "targets" not in payload or not isinstance(payload["targets"], dict):
+        return {"version": 1, "targets": {}}
+    return payload
 
 
 def registry_path(repo_root: Path, scope: str) -> Path:
@@ -120,11 +134,21 @@ def normalize_plugin_path(path: Path) -> Path:
 
 def list_records(repo_root: Path) -> list[dict]:
     records: list[dict] = []
+    deploy_state = load_deploy_state(deploy_state_path(repo_root))
     for scope in ("repo", "local"):
         registry = load_registry(registry_path(repo_root, scope))
         for key, record in registry["skills"].items():
             item = dict(record)
             item["key"] = key
+            deployments: dict[str, dict] = {}
+            for target_id, target in deploy_state.get("targets", {}).items():
+                skill_state = target.get("skills", {}).get(key)
+                if skill_state:
+                    deployments[target_id] = {
+                        "status": skill_state.get("status"),
+                        "target_up_to_date": skill_state.get("target_up_to_date"),
+                    }
+            item["deployments"] = deployments
             records.append(item)
     return sorted(records, key=lambda record: record["key"])
 
@@ -475,10 +499,17 @@ def print_records(records: list[dict]) -> None:
         print("No tracked skill sources.")
         return
     for record in records:
-        print(
+        line = (
             f"{record['key']} [{record['scope']}] {record['source_type']} -> {record['dest']} "
             f"(rev {record['resolved_revision']})"
         )
+        if record.get("deployments"):
+            deployment_bits = [
+                f"{target_id}={target['status']}"
+                for target_id, target in sorted(record["deployments"].items())
+            ]
+            line += " [" + ", ".join(deployment_bits) + "]"
+        print(line)
 
 
 def parse_args() -> argparse.Namespace:

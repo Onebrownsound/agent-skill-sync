@@ -52,6 +52,7 @@ In short:
 ```text
 agent-skill-sync/
   config/
+    deploy-state.local.json
     skill-sources.json
     targets.example.json
     targets.local.json
@@ -72,6 +73,7 @@ agent-skill-sync/
 - `config/targets.local.json`: machine-local target paths and enable flags
 - `config/skill-sources.json`: tracked external skill source registry for repo-managed installs
 - `config/skill-sources.local.json`: machine-local external skill source registry for plugin/path installs
+- `config/deploy-state.local.json`: machine-local deployment state showing which targets have which skill revision and whether they are current
 
 ## Installing External Skills Into This Repo
 
@@ -91,6 +93,8 @@ python scripts/manage_skill_sources.py install-plugin --bucket codex --path C:\p
 python scripts/manage_skill_sources.py update --key codex/skill-name
 python scripts/manage_skill_sources.py update-all
 ```
+
+`list` will also show per-target deployment freshness when `config/deploy-state.local.json` has been populated by `sync_skills.py --check`, `--apply`, or `--rollback`.
 
 After install or update:
 
@@ -208,6 +212,7 @@ And keeps this disabled for now:
 - `--pull` imports valid live skills from a target back into this repo without changing the live install.
 - Imported skills default into `skills/codex` or `skills/claude` based on the target kind.
 - If an imported skill name already exists in the repo with different contents, it is reported as a conflict and left unchanged.
+- Push checks and applies update `config/deploy-state.local.json` so this machine knows which repo skill revision is present on each configured target and whether that target is up to date.
 
 ## Authoring And Deploying
 
@@ -308,3 +313,4 @@ python3 scripts/sync_skills.py --apply
 - Managed deployment tickets and rollback backups are stored under `.skill-sync-tickets` in each target root.
 - GitHub-installed skills are tracked in `config/skill-sources.json`.
 - Local plugin/path installs are tracked in `config/skill-sources.local.json`, which is intentionally gitignored.
+- Per-target deployment freshness is tracked in `config/deploy-state.local.json`, which is intentionally gitignored.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -13,6 +14,7 @@ MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "sync_skills.py"
 SPEC = importlib.util.spec_from_file_location("sync_skills", MODULE_PATH)
 sync_skills = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
+sys.modules[SPEC.name] = sync_skills
 SPEC.loader.exec_module(sync_skills)
 
 
@@ -413,6 +415,150 @@ class TicketFlowTests(unittest.TestCase):
             sync_skills.apply_rollback_target(rollback_plan)
             self.assertFalse((target_root / "gamma").exists())
             self.assertEqual(sync_skills.load_manifest(target_root / ".skill-sync-manifest.json"), previous_manifest)
+
+
+class DeployStateTests(unittest.TestCase):
+    def test_refresh_deploy_state_records_source_revision_and_target_freshness(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = root / "repo"
+            target_root = root / "target"
+            (repo_root / "config").mkdir(parents=True, exist_ok=True)
+            (repo_root / "skills" / "shared").mkdir(parents=True, exist_ok=True)
+            target_root.mkdir()
+
+            source_skill = make_skill(repo_root / "skills" / "shared", "gh-skill", "# Shared skill\n")
+            (source_skill / "notes.txt").write_text("repo-v1", encoding="utf-8")
+            target_skill = make_skill(target_root, "gh-skill", "# Shared skill\n")
+            (target_skill / "notes.txt").write_text("repo-v1", encoding="utf-8")
+
+            sync_skills.write_json(
+                repo_root / "config" / "skill-sources.json",
+                {
+                    "version": 1,
+                    "skills": {
+                        "shared/gh-skill": {
+                            "name": "gh-skill",
+                            "bucket": "shared",
+                            "dest": "skills/shared/gh-skill",
+                            "scope": "repo",
+                            "source_type": "github",
+                            "source": {
+                                "repo": "owner/repo",
+                                "path": "skills/shared/gh-skill",
+                                "ref": "main",
+                            },
+                            "resolved_revision": "abc123",
+                            "installed_at": "2026-03-20T00:00:00",
+                            "updated_at": "2026-03-20T00:00:00",
+                        }
+                    },
+                },
+            )
+
+            config = sample_config(target_root)
+            sync_skills.write_json(
+                target_root / ".skill-sync-manifest.json",
+                {
+                    "version": 1,
+                    "target": "windows_codex",
+                    "kind": "codex",
+                    "skills": ["gh-skill"],
+                },
+            )
+
+            state = sync_skills.refresh_deploy_state(
+                repo_root=repo_root,
+                config=config,
+                target_ids=["windows_codex"],
+                host="windows",
+                action="apply",
+                ticket="ticket-state",
+            )
+
+            skill_state = state["targets"]["windows_codex"]["skills"]["shared/gh-skill"]
+            self.assertEqual(skill_state["source_type"], "github")
+            self.assertEqual(skill_state["source"]["repo"], "owner/repo")
+            self.assertEqual(skill_state["source_resolved_revision"], "abc123")
+            self.assertEqual(skill_state["status"], "up_to_date")
+            self.assertTrue(skill_state["deployed_to_target"])
+            self.assertTrue(skill_state["target_up_to_date"])
+
+    def test_refresh_deploy_state_marks_target_stale_after_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = root / "repo"
+            target_root = root / "target"
+            (repo_root / "config").mkdir(parents=True, exist_ok=True)
+            (repo_root / "skills" / "codex").mkdir(parents=True, exist_ok=True)
+            target_root.mkdir()
+
+            source_alpha = make_skill(repo_root / "skills" / "codex", "alpha", "# Repo alpha\n")
+            (source_alpha / "notes.txt").write_text("repo-v2", encoding="utf-8")
+            source_gamma = make_skill(repo_root / "skills" / "codex", "gamma", "# Repo gamma\n")
+
+            target_alpha = make_skill(target_root, "alpha", "# Live alpha\n")
+            (target_alpha / "notes.txt").write_text("repo-v1", encoding="utf-8")
+            target_beta = make_skill(target_root, "beta", "# Live beta\n")
+            (target_beta / "notes.txt").write_text("repo-v1", encoding="utf-8")
+            sync_skills.write_json(
+                target_root / ".skill-sync-manifest.json",
+                {
+                    "version": 1,
+                    "target": "windows_codex",
+                    "kind": "codex",
+                    "skills": ["alpha", "beta"],
+                },
+            )
+
+            plan = {
+                "root": str(target_root),
+                "manifest": str(target_root / ".skill-sync-manifest.json"),
+                "id": "windows_codex",
+                "kind": "codex",
+                "desired": ["alpha", "gamma"],
+                "add": ["gamma"],
+                "update": ["alpha"],
+                "remove": ["beta"],
+                "source_skills": {
+                    "alpha": str(source_alpha),
+                    "gamma": str(source_gamma),
+                },
+            }
+
+            sync_skills.apply_target(plan, clean=True, backup=True, ticket="ticket-rollback-state")
+            rollback_plan = {
+                "root": str(target_root),
+                "metadata_path": str(target_root / ".skill-sync-tickets" / "ticket-rollback-state" / "ticket.json"),
+                "manifest": str(target_root / ".skill-sync-manifest.json"),
+                "added": ["gamma"],
+                "updated": ["alpha"],
+                "removed": ["beta"],
+                "backed_up": ["alpha", "beta"],
+                "previous_manifest": {
+                    "version": 1,
+                    "target": "windows_codex",
+                    "kind": "codex",
+                    "skills": ["alpha", "beta"],
+                },
+            }
+            sync_skills.apply_rollback_target(rollback_plan)
+
+            config = sample_config(target_root)
+            state = sync_skills.refresh_deploy_state(
+                repo_root=repo_root,
+                config=config,
+                target_ids=["windows_codex"],
+                host="windows",
+                action="rollback",
+                ticket="ticket-rollback-state",
+            )
+
+            target_state = state["targets"]["windows_codex"]["skills"]
+            self.assertEqual(target_state["codex/alpha"]["status"], "out_of_date")
+            self.assertFalse(target_state["codex/alpha"]["target_up_to_date"])
+            self.assertEqual(target_state["codex/gamma"]["status"], "missing")
+            self.assertFalse(target_state["codex/gamma"]["deployed_to_target"])
 
 
 class CLITests(unittest.TestCase):

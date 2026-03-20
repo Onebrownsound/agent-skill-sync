@@ -12,6 +12,10 @@ from pathlib import Path
 import uuid
 
 
+SOURCE_REGISTRY_FILENAMES = ("skill-sources.json", "skill-sources.local.json")
+DEPLOY_STATE_FILENAME = "deploy-state.local.json"
+
+
 def detect_repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -69,6 +73,39 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def source_registry_paths(repo_root: Path) -> list[Path]:
+    return [repo_root / "config" / filename for filename in SOURCE_REGISTRY_FILENAMES]
+
+
+def load_source_index(repo_root: Path) -> dict[str, dict]:
+    records: dict[str, dict] = {}
+    for path in source_registry_paths(repo_root):
+        if not path.is_file():
+            continue
+        payload = load_json(path)
+        for key, record in payload.get("skills", {}).items():
+            if key not in records:
+                records[key] = record
+    return records
+
+
+def deploy_state_path(repo_root: Path) -> Path:
+    return repo_root / "config" / DEPLOY_STATE_FILENAME
+
+
+def load_deploy_state(path: Path) -> dict:
+    if not path.is_file():
+        return {"version": 1, "targets": {}}
+    payload = load_json(path)
+    if "targets" not in payload or not isinstance(payload["targets"], dict):
+        return {"version": 1, "targets": {}}
+    return payload
+
+
+def save_deploy_state(path: Path, payload: dict) -> None:
+    write_json(path, payload)
+
+
 def iter_skill_dirs(root: Path) -> dict[str, Path]:
     skills: dict[str, Path] = {}
     if not root.is_dir():
@@ -82,15 +119,26 @@ def iter_skill_dirs(root: Path) -> dict[str, Path]:
     return skills
 
 
-def collect_source_skills(repo_root: Path, catalog: dict[str, str], kind: str) -> dict[str, Path]:
-    skills: dict[str, Path] = {}
+def collect_source_skill_entries(repo_root: Path, catalog: dict[str, str], kind: str) -> dict[str, dict]:
+    skills: dict[str, dict] = {}
     for bucket in ("shared", kind):
         rel_path = catalog.get(bucket)
         if not rel_path:
             continue
         for name, path in iter_skill_dirs(repo_root / rel_path).items():
-            skills[name] = path
+            skills[name] = {
+                "path": path,
+                "bucket": bucket,
+                "key": f"{bucket}/{name}",
+            }
     return skills
+
+
+def collect_source_skills(repo_root: Path, catalog: dict[str, str], kind: str) -> dict[str, Path]:
+    return {
+        name: item["path"]
+        for name, item in collect_source_skill_entries(repo_root, catalog, kind).items()
+    }
 
 
 def file_hash(path: Path) -> str:
@@ -114,6 +162,17 @@ def dir_snapshot(root: Path) -> dict[str, str]:
         rel = path.relative_to(root).as_posix()
         snapshot[rel] = file_hash(path)
     return snapshot
+
+
+def skill_revision(root: Path) -> str:
+    digest = hashlib.sha256()
+    snapshot = dir_snapshot(root)
+    for rel_path in sorted(snapshot):
+        digest.update(rel_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(snapshot[rel_path].encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def load_manifest(path: Path) -> dict:
@@ -474,6 +533,102 @@ def print_rollback_plan(plan: dict) -> None:
     print(f"  rollback ready: {'yes' if plan['rollback_ready'] else 'no'}")
 
 
+def refresh_deploy_state(
+    *,
+    repo_root: Path,
+    config: dict,
+    target_ids: list[str],
+    host: str,
+    action: str,
+    ticket: str | None = None,
+) -> dict:
+    state_file = deploy_state_path(repo_root)
+    state = load_deploy_state(state_file)
+    state["version"] = 1
+    state["updated_at"] = datetime.now().isoformat()
+    source_index = load_source_index(repo_root)
+    target_filter = set(target_ids)
+
+    for target_id, target_cfg in config.get("targets", {}).items():
+        if target_filter and target_id not in target_filter:
+            continue
+        if host != "all" and target_cfg.get("host") != host:
+            continue
+        if not target_cfg.get("enabled", False):
+            continue
+        if target_cfg.get("kind") not in ("codex", "claude"):
+            continue
+
+        target_root = Path(target_cfg["path"])
+        manifest_name = config.get("manifest_filename", ".skill-sync-manifest.json")
+        manifest = load_manifest(target_root / manifest_name)
+        source_entries = collect_source_skill_entries(repo_root, config["catalog"], target_cfg["kind"])
+        previous_target_state = state["targets"].get(target_id, {})
+        previous_skill_states = previous_target_state.get("skills", {})
+        target_state = {
+            "id": target_id,
+            "host": target_cfg["host"],
+            "kind": target_cfg["kind"],
+            "root": str(target_root),
+            "manifest": str(target_root / manifest_name),
+            "last_checked_at": datetime.now().isoformat(),
+            "last_action": action,
+            "last_action_at": datetime.now().isoformat(),
+            "last_ticket": ticket if ticket else previous_target_state.get("last_ticket"),
+            "skills": {},
+        }
+
+        managed_names = set(manifest.get("skills", []))
+        for name, entry in source_entries.items():
+            source_path = entry["path"]
+            target_path = target_root / name
+            repo_revision = skill_revision(source_path)
+            target_revision = skill_revision(target_path) if target_path.exists() else None
+            target_up_to_date = target_revision == repo_revision
+            if target_up_to_date:
+                status = "up_to_date"
+            elif target_path.exists():
+                status = "out_of_date"
+            else:
+                status = "missing"
+
+            tracked = source_index.get(entry["key"])
+            if tracked:
+                source_type = tracked.get("source_type", "repo")
+                source_payload = tracked.get("source")
+                source_resolved_revision = tracked.get("resolved_revision")
+                tracked_scope = tracked.get("scope")
+            else:
+                source_type = "repo"
+                source_payload = None
+                source_resolved_revision = None
+                tracked_scope = "repo"
+
+            previous_skill = previous_skill_states.get(entry["key"], {})
+            target_state["skills"][entry["key"]] = {
+                "key": entry["key"],
+                "name": name,
+                "bucket": entry["bucket"],
+                "repo_revision": repo_revision,
+                "target_revision": target_revision,
+                "source_type": source_type,
+                "source": source_payload,
+                "source_resolved_revision": source_resolved_revision,
+                "tracked_scope": tracked_scope,
+                "managed_by_repo": name in managed_names,
+                "deployed_to_target": target_path.exists() and name in managed_names,
+                "present_in_target": target_path.exists(),
+                "target_up_to_date": target_up_to_date,
+                "status": status,
+                "last_ticket": ticket if ticket else previous_skill.get("last_ticket"),
+            }
+
+        state["targets"][target_id] = target_state
+
+    save_deploy_state(state_file, state)
+    return state
+
+
 def main() -> int:
     args = parse_args()
     repo_root = detect_repo_root()
@@ -566,6 +721,14 @@ def main() -> int:
                 return 2
             for plan in selected:
                 apply_rollback_target(plan)
+            refresh_deploy_state(
+                repo_root=repo_root,
+                config=config,
+                target_ids=[plan["id"] for plan in selected],
+                host=host,
+                action="rollback",
+                ticket=args.rollback,
+            )
             print(f"Rollback complete for ticket {args.rollback}.")
         elif args.pull:
             for plan in selected:
@@ -593,8 +756,25 @@ def main() -> int:
             if backup_runs:
                 for backup_run in backup_runs:
                     print(f"Backups for {backup_run['target']}: {backup_run['backup_root']}")
+            refresh_deploy_state(
+                repo_root=repo_root,
+                config=config,
+                target_ids=[plan["id"] for plan in selected],
+                host=host,
+                action="apply",
+                ticket=deployment_ticket,
+            )
             print("Sync complete.")
     else:
+        if not args.pull:
+            refresh_deploy_state(
+                repo_root=repo_root,
+                config=config,
+                target_ids=[plan["id"] for plan in selected],
+                host=host,
+                action="check" if not args.rollback else "rollback-check",
+                ticket=args.rollback if args.rollback else None,
+            )
         print("Dry run only. Re-run with --apply to make changes.")
 
     return 0
