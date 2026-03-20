@@ -52,9 +52,11 @@ In short:
 ```text
 agent-skill-sync/
   config/
+    skill-sources.json
     targets.example.json
     targets.local.json
   scripts/
+    manage_skill_sources.py
     sync_skills.py
     sync_windows.ps1
     sync_wsl.sh
@@ -68,6 +70,33 @@ agent-skill-sync/
 - `skills/codex`: sync only to Codex targets
 - `skills/claude`: sync only to Claude targets
 - `config/targets.local.json`: machine-local target paths and enable flags
+- `config/skill-sources.json`: tracked external skill source registry for repo-managed installs
+- `config/skill-sources.local.json`: machine-local external skill source registry for plugin/path installs
+
+## Installing External Skills Into This Repo
+
+Use `scripts/manage_skill_sources.py` when you want to bring a skill into this repo from somewhere else and keep enough bookkeeping to update it later.
+
+Supported source types:
+
+- GitHub repo paths, tracked in `config/skill-sources.json` by default
+- Local plugin or filesystem paths, tracked in `config/skill-sources.local.json` by default
+
+Typical commands:
+
+```powershell
+python scripts/manage_skill_sources.py list
+python scripts/manage_skill_sources.py install-github --bucket codex --repo owner/repo --path path/to/skill
+python scripts/manage_skill_sources.py install-plugin --bucket codex --path C:\path\to\skill
+python scripts/manage_skill_sources.py update --key codex/skill-name
+python scripts/manage_skill_sources.py update-all
+```
+
+After install or update:
+
+1. Review the imported skill in this repo.
+2. Run `python scripts/sync_skills.py --check`.
+3. Run `python scripts/sync_skills.py --apply` when you are ready to deploy outward.
 
 ## Which Path Should I Edit?
 
@@ -105,6 +134,8 @@ python3 scripts/sync_skills.py --apply
 
 If you are bootstrapping from an existing live install, use `--pull` first, review what came in, then sync outward normally.
 
+If you are installing a skill from GitHub or a local plugin into this repo, use `manage_skill_sources.py` first, then sync outward with `sync_skills.py`.
+
 From Windows PowerShell:
 
 ```powershell
@@ -112,6 +143,9 @@ python scripts/sync_skills.py --check
 python scripts/sync_skills.py --apply
 python scripts/sync_skills.py --pull --check --target windows_codex
 python scripts/sync_skills.py --pull --apply --target windows_codex
+python scripts/manage_skill_sources.py install-github --bucket codex --repo owner/repo --path skills/my-skill
+python scripts/manage_skill_sources.py install-plugin --bucket codex --path C:\path\to\plugin-skill
+python scripts/manage_skill_sources.py update --key codex/my-skill
 ```
 
 From WSL:
@@ -121,6 +155,9 @@ python3 scripts/sync_skills.py --check
 python3 scripts/sync_skills.py --apply
 python3 scripts/sync_skills.py --pull --check --target wsl_codex
 python3 scripts/sync_skills.py --pull --apply --target wsl_codex
+python3 scripts/manage_skill_sources.py install-github --bucket codex --repo owner/repo --path skills/my-skill
+python3 scripts/manage_skill_sources.py install-plugin --bucket codex --path /path/to/plugin-skill
+python3 scripts/manage_skill_sources.py update --key codex/my-skill
 ```
 
 Or use the wrappers:
@@ -223,6 +260,13 @@ For an existing live skill that is not yet source-managed:
 3. Review what was imported into the repo.
 4. Run normal `--check` and `--apply` to deploy the repo-managed state.
 
+For a skill that comes from another repo or plugin and should still be tracked:
+
+1. Install it into this repo with `scripts/manage_skill_sources.py`.
+2. Confirm the source registry entry looks right.
+3. Review the copied skill files under `skills/shared`, `skills/codex`, or `skills/claude`.
+4. Run normal `--check` and `--apply` to deploy the repo-managed state.
+
 ## Bootstrapping Existing Installs
 
 Use pull mode first when you want to turn an existing live skill catalog into source-managed repo content.
@@ -262,3 +306,5 @@ python3 scripts/sync_skills.py --apply
 - Hidden directories such as `.system` are intentionally ignored during pull imports.
 - Managed targets receive a `.skill-sync-manifest.json` file so the repo can track what it deployed.
 - Managed deployment tickets and rollback backups are stored under `.skill-sync-tickets` in each target root.
+- GitHub-installed skills are tracked in `config/skill-sources.json`.
+- Local plugin/path installs are tracked in `config/skill-sources.local.json`, which is intentionally gitignored.

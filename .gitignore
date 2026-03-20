@@ -1,4 +1,5 @@
 __pycache__/
 *.pyc
 config/targets.local.json
+config/skill-sources.local.json
 *.log
