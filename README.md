@@ -86,10 +86,87 @@ Typical commands:
 
 ```powershell
 python scripts/manage_skill_sources.py list
+python scripts/manage_skill_sources.py scan-github --repo owner/repo
+python scripts/manage_skill_sources.py scan-github --repo owner/repo --format json
+python scripts/manage_skill_sources.py install-github-batch --repo owner/repo --select shared --select claude
+python scripts/manage_skill_sources.py install-github-select --repo owner/repo --item skills/configure-ecc --item .claude/skills/everything-claude-code
+python scripts/manage_skill_sources.py install-github-batch --repo owner/repo --select codex --copy-agents --register-codex-agents
 python scripts/manage_skill_sources.py install-github --bucket codex --repo owner/repo --path path/to/skill
 python scripts/manage_skill_sources.py install-plugin --bucket codex --path C:\path\to\skill
 python scripts/manage_skill_sources.py update --key codex/skill-name
 python scripts/manage_skill_sources.py update-all
+```
+
+## Scanning A Repo Before Import
+
+Use `scan-github` to inventory a repository before installing anything into this repo.
+
+It currently works in a batch-first way:
+
+- `skills/<name>` are treated as shared skills
+- `.claude/skills/<name>` and `claude/skills/<name>` are treated as Claude-specific skills
+- `.codex/skills/<name>` and `codex/skills/<name>` are treated as Codex-specific skills
+- agent assets are inventoried separately and shown as manual items
+- unknown layouts are hidden by default unless you pass `--include-unknown`
+
+Example:
+
+```powershell
+python scripts/manage_skill_sources.py scan-github --repo affaan-m/everything-claude-code
+```
+
+That gives you:
+
+- a grouped skill inventory
+- a batch-oriented install plan by bucket
+- a separate list of agent assets that need dedicated handling
+
+If the scan looks right, you can batch install the recognized skill groups:
+
+```powershell
+python scripts/manage_skill_sources.py install-github-batch --repo affaan-m/everything-claude-code --select claude --select shared
+```
+
+If you want a granular subset instead of a whole group, use exact scan paths:
+
+```powershell
+python scripts/manage_skill_sources.py install-github-select --repo affaan-m/everything-claude-code --item skills/configure-ecc --item skills/tdd-workflow
+```
+
+Selection rule:
+
+- `--item` must match the repo-relative path shown by `scan-github`
+- selected skill paths install into their inferred buckets
+- selected agent paths still respect `--copy-agents` and `--register-codex-agents`
+
+Current rule:
+
+- skills can be batch installed
+- agent assets are scanned and listed, but are opt-in for copy and registration
+
+## Agent Defaults
+
+Agents are handled more conservatively than skills.
+
+Default behavior:
+
+- scan inventories agent assets
+- batch install does not copy agents unless you pass `--copy-agents`
+- batch install does not modify `.codex/config.toml` unless you pass `--register-codex-agents`
+
+Codex-specific rule:
+
+- copied Codex agents go under `.codex/agents/`
+- registration in `.codex/config.toml` is opt-in
+- tool-managed Codex agent entries live inside a dedicated managed block in `.codex/config.toml`
+- new registrations merge into that managed block so partial imports do not silently unregister older managed agents
+- if registration rewrites `.codex/config.toml`, the previous file is backed up to `.codex/config.toml.agent-skill-sync.bak`
+- existing unmanaged `[agents.<name>]` entries are not overwritten
+
+Example:
+
+```powershell
+python scripts/manage_skill_sources.py install-github-batch --repo affaan-m/everything-claude-code --select shared --select claude --copy-agents --register-codex-agents
 ```
 
 After install or update:
