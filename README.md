@@ -2,6 +2,32 @@
 
 Source-of-truth repo for syncing local skill catalogs across same-machine agent installs.
 
+## Quick Runbook
+
+1. Scan an external repo or edit source-managed skills and agents here.
+2. Import what you want into this repo.
+3. Dry run the local target sync.
+4. Apply the sync and save the printed ticket.
+5. Roll back by ticket if a target ends up in a bad state.
+
+Typical commands:
+
+```powershell
+python scripts/manage_skill_sources.py scan-github --repo owner/repo
+python scripts/manage_skill_sources.py install-github-batch --repo owner/repo --select shared --copy-agents
+python scripts/sync_skills.py --check
+python scripts/sync_skills.py --apply
+python scripts/sync_skills.py --rollback <ticket-uuid> --check
+python scripts/sync_skills.py --rollback <ticket-uuid> --apply
+```
+
+Mental model:
+
+- edit and import in this repo
+- deploy outward from this repo
+- skills and harness-specific agents are source-managed here
+- live installs are targets, not the source of truth
+
 ## What This Repo Is
 
 This repo is the canonical place to create, edit, review, and version skills.
@@ -13,6 +39,11 @@ If you want a skill to exist long-term, it should live here first:
 - `skills/shared` for skills that should go to every enabled target
 - `skills/codex` for Codex-only skills
 - `skills/claude` for Claude-only skills
+
+Harness-specific agents are also source-managed here:
+
+- `.codex/agents` for Codex agent files
+- `.claude/agents` for Claude agent files
 
 ## Operating Model
 
@@ -61,6 +92,11 @@ agent-skill-sync/
     sync_skills.py
     sync_windows.ps1
     sync_wsl.sh
+  .codex/
+    agents/
+    config.toml
+  .claude/
+    agents/
   skills/
     shared/
     codex/
@@ -74,6 +110,9 @@ agent-skill-sync/
 - `config/skill-sources.json`: tracked external skill source registry for repo-managed installs
 - `config/skill-sources.local.json`: machine-local external skill source registry for plugin/path installs
 - `config/deploy-state.local.json`: machine-local deployment state showing which targets have which skill revision and whether they are current
+- `.codex/agents`: source-managed Codex agent files that can be synced to Codex targets
+- `.claude/agents`: source-managed Claude agent files that can be synced to Claude targets
+- `.codex/config.toml`: repo-local staging surface for Codex agent registration behavior
 
 ## Installing External Skills Into This Repo
 
@@ -172,6 +211,18 @@ Example:
 ```powershell
 python scripts/manage_skill_sources.py install-github-batch --repo affaan-m/everything-claude-code --select shared --select claude --copy-agents --register-codex-agents
 ```
+
+After import, `sync_skills.py` can now deploy harness-specific agents outward too:
+
+- `.codex/agents/*.toml` deploy to each Codex target's sibling `agents/` directory and update that target's managed block in `config.toml`
+- `.claude/agents/*.md` deploy to each Claude target's sibling `agents/` directory
+- root `agents/*` stays source inventory only for now and is not auto-deployed cross-harness
+
+Current assumptions:
+
+- duplicate detection is by filename within a harness agent directory
+- Codex registration uses the filename stem as the agent name, so prefer simple names like `reviewer.toml`
+- multi-suffix filenames like `my-agent.config.toml` are allowed, but the registered Codex agent name becomes `my-agent.config`
 
 After install or update:
 
@@ -279,13 +330,14 @@ And keeps this disabled for now:
 - Running on Windows syncs Windows targets.
 - Running inside WSL syncs WSL targets.
 - `--check` prints the plan without changing anything.
-- `--apply` copies changed skills and writes a small managed manifest into the target root.
+- `--apply` copies changed skills and harness-specific agents and writes a small managed manifest into the target root.
 - Every push apply that changes one or more targets mints a deployment ticket UUID.
-- Existing target skills are backed up by default before destructive push changes such as updates and `--clean` removals.
-- Ticket metadata and backed-up skills are stored under `.skill-sync-tickets/<ticket-uuid>/` inside the target root.
+- Existing target skills, target agents, and managed Codex config are backed up by default before destructive push changes such as updates and `--clean` removals.
+- Ticket metadata and backed-up files are stored under `.skill-sync-tickets/<ticket-uuid>/` inside the target root.
 - Use `--rollback <ticket-uuid>` to restore the pre-deploy state for matching host targets.
 - Use `--no-backup` only when you intentionally want destructive push behavior with no rollback copy.
 - `--clean` removes previously managed skills that no longer exist in the source catalog for that target.
+- `--clean` also removes previously managed harness-specific agents that no longer exist in the source catalog for that target.
 - `--pull` imports valid live skills from a target back into this repo without changing the live install.
 - Imported skills default into `skills/codex` or `skills/claude` based on the target kind.
 - If an imported skill name already exists in the repo with different contents, it is reported as a conflict and left unchanged.
@@ -303,6 +355,14 @@ For a new or updated skill:
 6. Commit and push when you want that repo state preserved remotely.
 
 By default, any existing target skill that gets replaced is first moved into that target's deployment ticket folder so you can roll back if needed.
+
+For a new or updated harness-specific agent:
+
+1. Edit or add the agent in `.codex/agents` or `.claude/agents`.
+2. Run `python scripts/sync_skills.py --check`.
+3. Run `python scripts/sync_skills.py --apply`.
+4. Save the printed deployment ticket.
+5. Confirm the target agent files and, for Codex, the target `config.toml` managed block look right.
 
 ## Deployment Tickets And Rollback
 
@@ -333,6 +393,9 @@ The rollback restores the target to the pre-deploy state recorded for that ticke
 - skills added by that deployment are removed
 - skills updated by that deployment are restored from the ticket backup
 - skills removed by that deployment are restored from the ticket backup
+- agents added by that deployment are removed
+- agents updated or removed by that deployment are restored from the ticket backup
+- Codex target `config.toml` is restored when the deployment changed the managed agent block
 - the previous managed manifest is restored
 
 For an existing live skill that is not yet source-managed:

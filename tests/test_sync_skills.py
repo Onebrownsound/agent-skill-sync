@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "sync_skills.py"
+AGENT_MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "sync_agents.py"
 SPEC = importlib.util.spec_from_file_location("sync_skills", MODULE_PATH)
 sync_skills = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -23,6 +24,13 @@ def make_skill(root: Path, name: str, body: str = "# Skill\n") -> Path:
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
     return skill_dir
+
+
+def make_agent(root: Path, filename: str, body: str) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    agent_file = root / filename
+    agent_file.write_text(body, encoding="utf-8")
+    return agent_file
 
 
 def sample_config(target_path: Path) -> dict:
@@ -53,6 +61,10 @@ def make_cli_repo(root: Path, target_path: Path) -> Path:
     (repo_root / "skills" / "codex").mkdir(parents=True, exist_ok=True)
     (repo_root / "skills" / "claude").mkdir(parents=True, exist_ok=True)
     (repo_root / "scripts" / "sync_skills.py").write_text(MODULE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    (repo_root / "scripts" / "sync_agents.py").write_text(
+        AGENT_MODULE_PATH.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     sync_skills.write_json(repo_root / "config" / "targets.local.json", sample_config(target_path))
     return repo_root
 
@@ -152,6 +164,88 @@ class PullPlanTests(unittest.TestCase):
 
 
 class PushBackupTests(unittest.TestCase):
+    def test_plan_push_target_collects_harness_specific_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = root / "repo"
+            target_skills_root = root / "target" / "skills"
+            (repo_root / "skills" / "codex").mkdir(parents=True, exist_ok=True)
+            make_agent(repo_root / ".codex" / "agents", "reviewer.toml", "[agent]\n")
+            target_skills_root.mkdir(parents=True, exist_ok=True)
+
+            config = sample_config(target_skills_root)
+            plan = sync_skills.plan_push_target(
+                repo_root,
+                config,
+                "windows_codex",
+                config["targets"]["windows_codex"],
+                "windows",
+            )
+
+            assert plan is not None
+            self.assertEqual(plan["agent_add"], ["reviewer.toml"])
+            self.assertEqual(plan["agent_update"], [])
+            self.assertEqual(plan["agent_remove"], [])
+            self.assertTrue(plan["codex_config"]["update_needed"])
+
+    def test_apply_target_syncs_codex_agents_and_registers_target_config(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = root / "repo"
+            target_skills_root = root / "target" / "skills"
+            (repo_root / "skills" / "codex").mkdir(parents=True, exist_ok=True)
+            make_agent(repo_root / ".codex" / "agents", "reviewer.toml", "[agent]\nname = \"reviewer\"\n")
+            target_skills_root.mkdir(parents=True, exist_ok=True)
+
+            config = sample_config(target_skills_root)
+            plan = sync_skills.plan_push_target(
+                repo_root,
+                config,
+                "windows_codex",
+                config["targets"]["windows_codex"],
+                "windows",
+            )
+            assert plan is not None
+
+            result = sync_skills.apply_target(plan, clean=False, backup=True, ticket="ticket-agent-codex")
+
+            target_agent = target_skills_root.parent / "agents" / "reviewer.toml"
+            target_config = target_skills_root.parent / "config.toml"
+            self.assertTrue(target_agent.is_file())
+            self.assertIn(sync_skills.MANAGED_AGENTS_BEGIN, target_config.read_text(encoding="utf-8"))
+            self.assertIn("[agents.reviewer]", target_config.read_text(encoding="utf-8"))
+            self.assertEqual(result["ticket"], "ticket-agent-codex")
+            ticket_file = target_skills_root / ".skill-sync-tickets" / "ticket-agent-codex" / "ticket.json"
+            metadata = sync_skills.load_json(ticket_file)
+            self.assertEqual(metadata["added_agents"], ["reviewer.toml"])
+            self.assertTrue(metadata["codex_config_changed"])
+
+    def test_apply_target_syncs_claude_agents_without_settings_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = root / "repo"
+            target_skills_root = root / "target" / "skills"
+            target_skills_root.mkdir(parents=True, exist_ok=True)
+            (repo_root / "skills" / "claude").mkdir(parents=True, exist_ok=True)
+            make_agent(repo_root / ".claude" / "agents", "researcher.md", "---\nname: researcher\n---\n")
+
+            config = sample_config(target_skills_root)
+            config["targets"]["windows_codex"]["kind"] = "claude"
+            plan = sync_skills.plan_push_target(
+                repo_root,
+                config,
+                "windows_codex",
+                config["targets"]["windows_codex"],
+                "windows",
+            )
+            assert plan is not None
+
+            sync_skills.apply_target(plan, clean=False, backup=True, ticket="ticket-agent-claude")
+
+            target_agent = target_skills_root.parent / "agents" / "researcher.md"
+            self.assertTrue(target_agent.is_file())
+            self.assertFalse((target_skills_root.parent / "settings.json").exists())
+
     def test_apply_target_backs_up_updated_skill_before_replace(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
             root = Path(root_dir)
@@ -298,6 +392,66 @@ class PushBackupTests(unittest.TestCase):
             self.assertEqual((target_root / "alpha" / "notes.txt").read_text(encoding="utf-8"), "old-alpha")
             self.assertEqual((target_root / "beta" / "notes.txt").read_text(encoding="utf-8"), "old-beta")
             self.assertFalse((target_root / ".skill-sync-manifest.json").exists())
+
+    def test_apply_rollback_target_restores_codex_agents_and_config(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = root / "repo"
+            target_skills_root = root / "target" / "skills"
+            target_skills_root.mkdir(parents=True, exist_ok=True)
+            (repo_root / "skills" / "codex").mkdir(parents=True, exist_ok=True)
+            make_agent(repo_root / ".codex" / "agents", "docs.toml", "[agent]\nname = \"docs\"\n")
+
+            existing_agent = make_agent(target_skills_root.parent / "agents", "reviewer.toml", "[agent]\nname = \"reviewer\"\n")
+            sync_skills.write_json(
+                target_skills_root / ".skill-sync-manifest.json",
+                {
+                    "version": 1,
+                    "target": "windows_codex",
+                    "kind": "codex",
+                    "skills": [],
+                    "agents": ["reviewer.toml"],
+                },
+            )
+            (target_skills_root.parent / "config.toml").write_text(
+                "\n".join(
+                    [
+                        sync_skills.MANAGED_AGENTS_BEGIN,
+                        "[agents.reviewer]",
+                        'path = ".codex/agents/reviewer.toml"',
+                        sync_skills.MANAGED_AGENTS_END,
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = sample_config(target_skills_root)
+            plan = sync_skills.plan_push_target(
+                repo_root,
+                config,
+                "windows_codex",
+                config["targets"]["windows_codex"],
+                "windows",
+            )
+            assert plan is not None
+
+            sync_skills.apply_target(plan, clean=True, backup=True, ticket="ticket-agent-rollback")
+            rollback_plan = sync_skills.plan_rollback_target(
+                config,
+                "windows_codex",
+                config["targets"]["windows_codex"],
+                "windows",
+                ticket="ticket-agent-rollback",
+            )
+            assert rollback_plan is not None
+            sync_skills.apply_rollback_target(rollback_plan)
+
+            self.assertTrue(existing_agent.is_file())
+            self.assertFalse((target_skills_root.parent / "agents" / "docs.toml").exists())
+            config_text = (target_skills_root.parent / "config.toml").read_text(encoding="utf-8")
+            self.assertIn("[agents.reviewer]", config_text)
+            self.assertNotIn("[agents.docs]", config_text)
 
 
 class TicketFlowTests(unittest.TestCase):
@@ -579,7 +733,10 @@ class CLITests(unittest.TestCase):
             assert match is not None
             ticket = match.group(1)
             self.assertEqual(str(uuid.UUID(ticket)), ticket)
-            self.assertIn(f"Backups for windows_codex: {target_root / '.skill-sync-tickets' / ticket / 'skills'}", result.stdout)
+            self.assertIn(
+                f"Skill backups for windows_codex: {target_root / '.skill-sync-tickets' / ticket / 'skills'}",
+                result.stdout,
+            )
             self.assertTrue((target_root / ".skill-sync-tickets" / ticket / "ticket.json").is_file())
 
     def test_cli_rollback_prints_completion_message_and_restores_state(self) -> None:

@@ -11,9 +11,17 @@ import sys
 from pathlib import Path
 import uuid
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import sync_agents
+
 
 SOURCE_REGISTRY_FILENAMES = ("skill-sources.json", "skill-sources.local.json")
 DEPLOY_STATE_FILENAME = "deploy-state.local.json"
+MANAGED_AGENTS_BEGIN = sync_agents.MANAGED_AGENTS_BEGIN
+MANAGED_AGENTS_END = sync_agents.MANAGED_AGENTS_END
 
 
 def detect_repo_root() -> Path:
@@ -265,6 +273,12 @@ def plan_push_target(repo_root: Path, config: dict, target_id: str, target_cfg: 
             unchanged.append(name)
 
     to_remove = sorted(name for name in managed_names if name not in desired_names)
+    agent_plan = sync_agents.plan_agent_sync(
+        repo_root=repo_root,
+        kind=target_cfg["kind"],
+        target_root=target_root,
+        managed_agents=sorted(manifest.get("agents", [])),
+    )
 
     return {
         "id": target_id,
@@ -278,6 +292,7 @@ def plan_push_target(repo_root: Path, config: dict, target_id: str, target_cfg: 
         "unchanged": sorted(unchanged),
         "remove": to_remove,
         "source_skills": {name: str(path) for name, path in source_skills.items()},
+        **agent_plan,
     }
 
 
@@ -356,10 +371,18 @@ def plan_rollback_target(config: dict, target_id: str, target_cfg: dict, host: s
         "updated": sorted(metadata.get("updated", [])),
         "removed": sorted(metadata.get("removed", [])),
         "backed_up": sorted(metadata.get("backed_up", [])),
+        "added_agents": sorted(metadata.get("added_agents", [])),
+        "updated_agents": sorted(metadata.get("updated_agents", [])),
+        "removed_agents": sorted(metadata.get("removed_agents", [])),
+        "backed_up_agents": sorted(metadata.get("backed_up_agents", [])),
         "rollback_ready": bool(metadata.get("rollback_ready", False)),
         "previous_manifest": metadata.get("previous_manifest"),
         "manifest": str(target_root / config.get("manifest_filename", ".skill-sync-manifest.json")),
         "source_skills": metadata.get("source_skills", {}),
+        "source_agents": metadata.get("source_agents", {}),
+        "agent_root": metadata.get("agent_root"),
+        "agent_backup_root": metadata.get("agent_backup_root"),
+        "codex_config": metadata.get("codex_config"),
     }
 
 
@@ -374,7 +397,15 @@ def apply_target(plan: dict, clean: bool, backup: bool = True, ticket: str | Non
     previous_manifest = load_manifest(manifest_path) if manifest_path.exists() else None
     wrote_ticket = False
 
-    changed = bool(plan["add"] or plan["update"] or (clean and plan["remove"]))
+    changed = bool(
+        plan["add"]
+        or plan["update"]
+        or (clean and plan["remove"])
+        or plan.get("agent_add")
+        or plan.get("agent_update")
+        or (clean and plan.get("agent_remove"))
+        or (plan.get("codex_config") and plan["codex_config"].get("update_needed"))
+    )
     ticket_value = ticket if changed else None
     ticket_dir: Path | None = None
     if ticket_value:
@@ -403,10 +434,16 @@ def apply_target(plan: dict, clean: bool, backup: bool = True, ticket: str | Non
             if skill_dir.exists():
                 if backup:
                     assert backup_run_root is not None
-                    backup_path = backup_skill(skill_dir, backup_run_root)
+                    backup_path = sync_agents.backup_path_entry(skill_dir, backup_run_root)
                     backup_records.append((name, str(backup_path)))
                 else:
                     shutil.rmtree(skill_dir)
+    agent_result = sync_agents.apply_agent_sync(
+        plan,
+        backup=backup,
+        clean=clean,
+        ticket_dir=ticket_dir,
+    )
 
     write_json(
         manifest_path,
@@ -415,11 +452,23 @@ def apply_target(plan: dict, clean: bool, backup: bool = True, ticket: str | Non
             "target": plan["id"],
             "kind": plan["kind"],
             "skills": plan["desired"],
+            "agents": plan.get("desired_agents", []),
         },
     )
 
     if ticket_dir is not None:
         ensure_dir(ticket_dir)
+        rollback_requires_backup = bool(
+            plan["update"]
+            or (clean and plan["remove"])
+            or plan.get("agent_update")
+            or (clean and plan.get("agent_remove"))
+            or (
+                plan.get("codex_config")
+                and plan["codex_config"].get("update_needed")
+                and plan["codex_config"].get("previous_exists")
+            )
+        )
         write_json(
             ticket_dir / "ticket.json",
             {
@@ -434,15 +483,36 @@ def apply_target(plan: dict, clean: bool, backup: bool = True, ticket: str | Non
                 "removed": plan["remove"] if clean else [],
                 "backed_up": [name for name, _ in backup_records],
                 "backup_root": str(backup_run_root) if backup_run_root else None,
-                "rollback_ready": backup or not (plan["update"] or (clean and plan["remove"])),
+                "added_agents": plan.get("agent_add", []),
+                "updated_agents": plan.get("agent_update", []),
+                "removed_agents": plan.get("agent_remove", []) if clean else [],
+                "backed_up_agents": [name for name, _ in agent_result["agent_backups"]],
+                "agent_root": plan.get("agent_root"),
+                "agent_backup_root": agent_result["agent_backup_root"],
+                "codex_config_changed": agent_result["codex_config_changed"],
+                "codex_config": {
+                    "config_path": plan["codex_config"]["config_path"],
+                    "changed": agent_result["codex_config_changed"],
+                    "previous_exists": plan["codex_config"].get("previous_exists", False),
+                    "backup_path": agent_result["codex_config_backup"],
+                    "registered": plan["codex_config"].get("registered", []),
+                    "skipped": plan["codex_config"].get("skipped", []),
+                }
+                if plan.get("codex_config")
+                else None,
+                "rollback_ready": backup or not rollback_requires_backup,
                 "previous_manifest": previous_manifest,
                 "source_skills": plan["source_skills"],
+                "source_agents": plan.get("source_agents", {}),
             },
         )
         wrote_ticket = True
     return {
         "backup_root": str(backup_run_root) if backup_run_root else None,
         "backups": backup_records,
+        "agent_backup_root": agent_result["agent_backup_root"],
+        "agent_backups": agent_result["agent_backups"],
+        "codex_config_backup": agent_result["codex_config_backup"],
         "ticket": ticket_value,
         "ticket_root": str(ticket_dir) if ticket_dir else None,
         "wrote_ticket": wrote_ticket,
@@ -481,6 +551,7 @@ def apply_rollback_target(plan: dict) -> None:
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(backup_skill_dir, dest)
+    sync_agents.rollback_agent_sync(plan)
 
     previous_manifest = plan["previous_manifest"]
     if previous_manifest is None:
@@ -505,6 +576,24 @@ def print_push_plan(plan: dict) -> None:
         for name in plan["remove"]:
             print(f"    - {name}")
     print(f"  unchanged: {len(plan['unchanged'])}")
+    print(f"  agent add: {len(plan.get('agent_add', []))}")
+    if plan.get("agent_add"):
+        for name in plan["agent_add"]:
+            print(f"    + {name}")
+    print(f"  agent update: {len(plan.get('agent_update', []))}")
+    if plan.get("agent_update"):
+        for name in plan["agent_update"]:
+            print(f"    ~ {name}")
+    print(f"  agent remove: {len(plan.get('agent_remove', []))}")
+    if plan.get("agent_remove"):
+        for name in plan["agent_remove"]:
+            print(f"    - {name}")
+    if plan.get("codex_config"):
+        config_plan = plan["codex_config"]
+        print(f"  codex config update: {'yes' if config_plan['update_needed'] else 'no'}")
+        if config_plan.get("skipped"):
+            for item in config_plan["skipped"]:
+                print(f"    ! {item['name']} ({item['reason']})")
 
 
 def print_pull_plan(plan: dict) -> None:
@@ -529,6 +618,14 @@ def print_rollback_plan(plan: dict) -> None:
     print(f"  restore backed up: {len(plan['backed_up'])}")
     if plan["backed_up"]:
         for name in plan["backed_up"]:
+            print(f"    + {name}")
+    print(f"  remove added agents: {len(plan.get('added_agents', []))}")
+    if plan.get("added_agents"):
+        for name in plan["added_agents"]:
+            print(f"    - {name}")
+    print(f"  restore backed up agents: {len(plan.get('backed_up_agents', []))}")
+    if plan.get("backed_up_agents"):
+        for name in plan["backed_up_agents"]:
             print(f"    + {name}")
     print(f"  rollback ready: {'yes' if plan['rollback_ready'] else 'no'}")
 
@@ -740,7 +837,14 @@ def main() -> int:
         else:
             backup_runs: list[dict] = []
             deployment_ticket = generate_ticket() if any(
-                plan["add"] or plan["update"] or (args.clean and plan["remove"]) for plan in selected
+                plan["add"]
+                or plan["update"]
+                or (args.clean and plan["remove"])
+                or plan.get("agent_add")
+                or plan.get("agent_update")
+                or (args.clean and plan.get("agent_remove"))
+                or (plan.get("codex_config") and plan["codex_config"].get("update_needed"))
+                for plan in selected
             ) else None
             for plan in selected:
                 result = apply_target(
@@ -749,13 +853,18 @@ def main() -> int:
                     backup=not args.no_backup,
                     ticket=deployment_ticket,
                 )
-                if result["backups"]:
+                if result["backups"] or result.get("agent_backups") or result.get("codex_config_backup"):
                     backup_runs.append({"target": plan["id"], **result})
             if deployment_ticket:
                 print(f"Ticket: {deployment_ticket}")
             if backup_runs:
                 for backup_run in backup_runs:
-                    print(f"Backups for {backup_run['target']}: {backup_run['backup_root']}")
+                    if backup_run.get("backup_root"):
+                        print(f"Skill backups for {backup_run['target']}: {backup_run['backup_root']}")
+                    if backup_run.get("agent_backup_root"):
+                        print(f"Agent backups for {backup_run['target']}: {backup_run['agent_backup_root']}")
+                    if backup_run.get("codex_config_backup"):
+                        print(f"Config backup for {backup_run['target']}: {backup_run['codex_config_backup']}")
             refresh_deploy_state(
                 repo_root=repo_root,
                 config=config,
