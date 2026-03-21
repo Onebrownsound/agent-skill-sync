@@ -218,6 +218,12 @@ After import, `sync_skills.py` can now deploy harness-specific agents outward to
 - `.claude/agents/*.md` deploy to each Claude target's sibling `agents/` directory
 - root `agents/*` stays source inventory only for now and is not auto-deployed cross-harness
 
+Current assumptions:
+
+- duplicate detection is by filename within a harness agent directory
+- Codex registration uses the filename stem as the agent name, so prefer simple names like `reviewer.toml`
+- multi-suffix filenames like `my-agent.config.toml` are allowed, but the registered Codex agent name becomes `my-agent.config`
+
 After install or update:
 
 1. Review the imported skill in this repo.

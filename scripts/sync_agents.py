@@ -122,26 +122,32 @@ def render_target_codex_config(config_path: Path, desired_agent_names: list[str]
         seen_names.add(name)
 
         prefix_match = find_codex_agent_section(prefix, name)
+        suffix_match = find_codex_agent_section(suffix, name)
+        sections = []
         if prefix_match:
-            section_start, section_end, section = prefix_match
+            sections.append(("prefix", prefix_match))
+        if suffix_match:
+            sections.append(("suffix", suffix_match))
+
+        invalid_reason: str | None = None
+        for _location, match in sections:
+            _section_start, _section_end, section = match
             if not is_exact_managed_codex_agent_section(section, name):
-                reason = "existing unmanaged agent config"
+                invalid_reason = "existing unmanaged agent config"
                 if is_partially_managed_codex_agent_section(section, name):
-                    reason = "existing partially managed agent config"
-                skipped.append({"name": name, "reason": reason})
-                continue
+                    invalid_reason = "existing partially managed agent config"
+                break
+
+        if invalid_reason is not None:
+            skipped.append({"name": name, "reason": invalid_reason})
+            continue
+
+        if prefix_match:
+            section_start, section_end, _section = prefix_match
             prefix = prefix[:section_start] + prefix[section_end:]
-        else:
-            suffix_match = find_codex_agent_section(suffix, name)
-            if suffix_match:
-                section_start, section_end, section = suffix_match
-                if not is_exact_managed_codex_agent_section(section, name):
-                    reason = "existing unmanaged agent config"
-                    if is_partially_managed_codex_agent_section(section, name):
-                        reason = "existing partially managed agent config"
-                    skipped.append({"name": name, "reason": reason})
-                    continue
-                suffix = suffix[:section_start] + suffix[section_end:]
+        if suffix_match:
+            section_start, section_end, _section = suffix_match
+            suffix = suffix[:section_start] + suffix[section_end:]
 
         registered.append(name)
 
