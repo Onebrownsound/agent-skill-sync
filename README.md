@@ -89,6 +89,7 @@ python scripts/manage_skill_sources.py list
 python scripts/manage_skill_sources.py scan-github --repo owner/repo
 python scripts/manage_skill_sources.py scan-github --repo owner/repo --format json
 python scripts/manage_skill_sources.py install-github-batch --repo owner/repo --select shared --select claude
+python scripts/manage_skill_sources.py install-github-select --repo owner/repo --item skills/configure-ecc --item .claude/skills/everything-claude-code
 python scripts/manage_skill_sources.py install-github-batch --repo owner/repo --select codex --copy-agents --register-codex-agents
 python scripts/manage_skill_sources.py install-github --bucket codex --repo owner/repo --path path/to/skill
 python scripts/manage_skill_sources.py install-plugin --bucket codex --path C:\path\to\skill
@@ -125,6 +126,18 @@ If the scan looks right, you can batch install the recognized skill groups:
 ```powershell
 python scripts/manage_skill_sources.py install-github-batch --repo affaan-m/everything-claude-code --select claude --select shared
 ```
+
+If you want a granular subset instead of a whole group, use exact scan paths:
+
+```powershell
+python scripts/manage_skill_sources.py install-github-select --repo affaan-m/everything-claude-code --item skills/configure-ecc --item skills/tdd-workflow
+```
+
+Selection rule:
+
+- `--item` must match the repo-relative path shown by `scan-github`
+- selected skill paths install into their inferred buckets
+- selected agent paths still respect `--copy-agents` and `--register-codex-agents`
 
 Current rule:
 

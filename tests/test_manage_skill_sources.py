@@ -351,6 +351,60 @@ class ScanTests(unittest.TestCase):
             self.assertEqual(result["skipped_total"], 1)
             self.assertEqual(result["results"][0]["status"], "skipped")
 
+    def test_resolve_selected_scan_items_rejects_unknown_path(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            source_repo = root / "external-repo"
+            make_skill(source_repo / "skills", "configure-ecc")
+
+            scan = manage_skill_sources.scan_materialized_repo(
+                repo_root=source_repo,
+                repo="owner/repo",
+                ref="main",
+                resolved_revision="scan123",
+            )
+
+            with self.assertRaises(manage_skill_sources.SourceError) as raised:
+                manage_skill_sources.resolve_selected_scan_items(scan, ["skills/missing-skill"])
+
+            self.assertIn("skills/missing-skill", str(raised.exception))
+
+    def test_install_selected_scan_items_installs_only_requested_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            source_repo = root / "external-repo"
+            make_skill(source_repo / ".claude" / "skills", "everything-claude-code")
+            make_skill(source_repo / "skills", "configure-ecc")
+            make_skill(source_repo / "skills", "continuous-learning")
+            (source_repo / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (source_repo / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+            (source_repo / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+            (source_repo / ".claude" / "agents" / "researcher.md").write_text("---\nname: researcher\n---\n", encoding="utf-8")
+
+            scan = manage_skill_sources.scan_materialized_repo(
+                repo_root=source_repo,
+                repo="owner/repo",
+                ref="main",
+                resolved_revision="scan123",
+            )
+            result = manage_skill_sources.install_selected_scan_items(
+                repo_root=repo_root,
+                scan=scan,
+                item_paths=["skills/configure-ecc", ".codex/agents/reviewer.toml"],
+                source_repo_root=source_repo,
+                copy_agents=True,
+            )
+
+            self.assertEqual(result["selected_total"], 2)
+            self.assertEqual(result["skills"]["installed_total"], 1)
+            self.assertEqual(result["agents"]["installed_total"], 1)
+            self.assertTrue((repo_root / "skills" / "shared" / "configure-ecc" / "SKILL.md").is_file())
+            self.assertTrue((repo_root / ".codex" / "agents" / "reviewer.toml").is_file())
+            self.assertFalse((repo_root / "skills" / "shared" / "continuous-learning").exists())
+            self.assertFalse((repo_root / "skills" / "claude" / "everything-claude-code").exists())
+            self.assertFalse((repo_root / ".claude" / "agents" / "researcher.md").exists())
+
     def test_install_scanned_agents_requires_opt_in_copy(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
             root = Path(root_dir)

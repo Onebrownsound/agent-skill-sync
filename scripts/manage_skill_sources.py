@@ -769,15 +769,44 @@ def selected_scan_items(scan: dict, selections: list[str] | None = None) -> list
     return items
 
 
-def install_scanned_skills(
+def scan_item_lookup(scan: dict) -> dict[str, dict]:
+    lookup: dict[str, dict] = {}
+    for collection in ("skills", "agents"):
+        for item in scan.get(collection, []):
+            lookup[item["path"]] = item
+    return lookup
+
+
+def resolve_selected_scan_items(scan: dict, item_paths: list[str]) -> list[dict]:
+    lookup = scan_item_lookup(scan)
+    selected: list[dict] = []
+    missing: list[str] = []
+    seen_paths: set[str] = set()
+
+    for path in item_paths:
+        normalized = path.replace("\\", "/").strip("/")
+        item = lookup.get(normalized)
+        if not item:
+            missing.append(normalized)
+            continue
+        if normalized in seen_paths:
+            continue
+        seen_paths.add(normalized)
+        selected.append(item)
+
+    if missing:
+        raise SourceError(f"Requested scan path(s) not found: {', '.join(missing)}")
+
+    return selected
+
+
+def install_skill_items(
     *,
     repo_root: Path,
-    scan: dict,
-    selections: list[str] | None,
+    items: list[dict],
     source_repo_root: Path,
     scope: str = "repo",
 ) -> dict:
-    items = selected_scan_items(scan, selections)
     results: list[dict] = []
     installed_total = 0
     skipped_total = 0
@@ -829,6 +858,23 @@ def install_scanned_skills(
     }
 
 
+def install_scanned_skills(
+    *,
+    repo_root: Path,
+    scan: dict,
+    selections: list[str] | None,
+    source_repo_root: Path,
+    scope: str = "repo",
+) -> dict:
+    items = selected_scan_items(scan, selections)
+    return install_skill_items(
+        repo_root=repo_root,
+        items=items,
+        source_repo_root=source_repo_root,
+        scope=scope,
+    )
+
+
 def copy_file(source: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, dest)
@@ -850,11 +896,26 @@ def install_scanned_agents(
     source_repo_root: Path,
     copy_agents: bool = False,
 ) -> dict:
+    return install_agent_items(
+        repo_root=repo_root,
+        items=scan.get("agents", []),
+        source_repo_root=source_repo_root,
+        copy_agents=copy_agents,
+    )
+
+
+def install_agent_items(
+    *,
+    repo_root: Path,
+    items: list[dict],
+    source_repo_root: Path,
+    copy_agents: bool = False,
+) -> dict:
     results: list[dict] = []
     installed_total = 0
     skipped_total = 0
 
-    for item in scan.get("agents", []):
+    for item in items:
         dest = agent_dest(repo_root, item["bucket"], item["path"])
         if not copy_agents:
             results.append(
@@ -886,6 +947,36 @@ def install_scanned_agents(
         "installed_total": installed_total,
         "skipped_total": skipped_total,
         "results": results,
+    }
+
+
+def install_selected_scan_items(
+    *,
+    repo_root: Path,
+    scan: dict,
+    item_paths: list[str],
+    source_repo_root: Path,
+    scope: str = "repo",
+    copy_agents: bool = False,
+) -> dict:
+    items = resolve_selected_scan_items(scan, item_paths)
+    skill_items = [item for item in items if item["asset_type"] == "skill"]
+    agent_items = [item for item in items if item["asset_type"] == "agent"]
+    return {
+        "selected_total": len(items),
+        "items": items,
+        "skills": install_skill_items(
+            repo_root=repo_root,
+            items=skill_items,
+            source_repo_root=source_repo_root,
+            scope=scope,
+        ),
+        "agents": install_agent_items(
+            repo_root=repo_root,
+            items=agent_items,
+            source_repo_root=source_repo_root,
+            copy_agents=copy_agents,
+        ),
     }
 
 
@@ -1123,6 +1214,25 @@ def parse_args() -> argparse.Namespace:
     install_batch_parser.add_argument("--copy-agents", action="store_true")
     install_batch_parser.add_argument("--register-codex-agents", action="store_true")
 
+    install_select_parser = subparsers.add_parser(
+        "install-github-select",
+        help="Install exact scanned repo paths from GitHub.",
+    )
+    install_select_parser.add_argument("--repo", help="GitHub repo in owner/repo form.")
+    install_select_parser.add_argument("--url", help="GitHub repo URL.")
+    install_select_parser.add_argument("--ref", default=DEFAULT_REF)
+    install_select_parser.add_argument("--method", choices=["auto", "download", "git"], default="auto")
+    install_select_parser.add_argument(
+        "--item",
+        action="append",
+        dest="items",
+        required=True,
+        help="Exact repo-relative path from scan-github output. Repeat to install multiple items.",
+    )
+    install_select_parser.add_argument("--scope", choices=sorted(VALID_SCOPES), default="repo")
+    install_select_parser.add_argument("--copy-agents", action="store_true")
+    install_select_parser.add_argument("--register-codex-agents", action="store_true")
+
     install_github_parser = subparsers.add_parser("install-github", help="Install a tracked skill from GitHub.")
     install_github_parser.add_argument("--bucket", choices=sorted(VALID_BUCKETS), required=True)
     install_github_parser.add_argument("--repo", help="GitHub repo in owner/repo form.")
@@ -1222,6 +1332,68 @@ def main() -> int:
                     print(f"  ~ {item['key']} ({item['reason']})")
             print(
                 f"Agent copy: installed {agent_result['installed_total']}; skipped {agent_result['skipped_total']}."
+            )
+            if args.register_codex_agents:
+                print(
+                    f"Codex agent registration: registered {len(register_result['registered'])}; "
+                    f"skipped {len(register_result['skipped'])}."
+                )
+                if register_result.get("backup"):
+                    print(f"  config backup: {register_result['backup']}")
+            else:
+                print("Codex agent registration was skipped (opt-in).")
+            print("Run scripts/sync_skills.py --check before deploying outward.")
+            return 0
+
+        if args.command == "install-github-select":
+            scan = scan_github_repo(
+                repo=args.repo,
+                url=args.url,
+                ref=args.ref,
+                method=args.method,
+            )
+            repo_name = scan["repo"]
+            repo_ref = scan["ref"]
+            with materialize_github_repo(repo_name, repo_ref, method=args.method) as (source_repo_root, resolved_revision):
+                scan["resolved_revision"] = resolved_revision
+                for collection in ("skills", "agents"):
+                    for item in scan.get(collection, []):
+                        item["resolved_revision"] = resolved_revision
+                for group_items in scan.get("groups", {}).values():
+                    for item in group_items:
+                        item["resolved_revision"] = resolved_revision
+                result = install_selected_scan_items(
+                    repo_root=repo_root,
+                    scan=scan,
+                    item_paths=args.items,
+                    source_repo_root=source_repo_root,
+                    scope=args.scope,
+                    copy_agents=args.copy_agents,
+                )
+            codex_agent_names = [
+                item["name"]
+                for item in result["items"]
+                if item["asset_type"] == "agent" and item["bucket"] == "codex"
+            ]
+            register_result = {"registered": [], "skipped": []}
+            if args.register_codex_agents:
+                register_result = register_codex_agents(
+                    repo_root=repo_root,
+                    agent_names=codex_agent_names,
+                )
+            print(f"Selected {result['selected_total']} item(s).")
+            print(
+                f"Installed {result['skills']['installed_total']} skill(s); "
+                f"skipped {result['skills']['skipped_total']}."
+            )
+            for item in result["skills"]["results"]:
+                if item["status"] == "installed":
+                    print(f"  + {item['key']} <- {item['path']}")
+                else:
+                    print(f"  ~ {item['key']} ({item['reason']})")
+            print(
+                f"Agent copy: installed {result['agents']['installed_total']}; "
+                f"skipped {result['agents']['skipped_total']}."
             )
             if args.register_codex_agents:
                 print(
