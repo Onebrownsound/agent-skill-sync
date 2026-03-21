@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 
@@ -188,6 +188,57 @@ class GithubInstallTests(unittest.TestCase):
             )
             record = registry["skills"]["shared/gh-skill"]
             self.assertEqual(record["resolved_revision"], "def456")
+
+    def test_git_sparse_checkout_warns_when_https_clone_falls_back_to_ssh(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            calls: list[list[str]] = []
+            original_run_git = manage_skill_sources.run_git
+
+            def fake_run_git(args: list[str]) -> None:
+                calls.append(args)
+                if args[:2] == ["git", "clone"] and "https://github.com/owner/repo.git" in args:
+                    raise manage_skill_sources.SourceError("https failed")
+
+            buffer = io.StringIO()
+            manage_skill_sources.run_git = fake_run_git
+            try:
+                with redirect_stderr(buffer):
+                    repo_dir = manage_skill_sources.git_sparse_checkout(
+                        "owner/repo",
+                        "main",
+                        "skills/demo",
+                        root,
+                    )
+            finally:
+                manage_skill_sources.run_git = original_run_git
+
+            self.assertEqual(repo_dir, root / "repo")
+            self.assertIn("Falling back to SSH clone for owner/repo", buffer.getvalue())
+            self.assertTrue(any("git@github.com:owner/repo.git" in call for call in calls))
+
+    def test_git_clone_repo_warns_when_https_clone_falls_back_to_ssh(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            calls: list[list[str]] = []
+            original_run_git = manage_skill_sources.run_git
+
+            def fake_run_git(args: list[str]) -> None:
+                calls.append(args)
+                if args[:2] == ["git", "clone"] and "https://github.com/owner/repo.git" in args:
+                    raise manage_skill_sources.SourceError("https failed")
+
+            buffer = io.StringIO()
+            manage_skill_sources.run_git = fake_run_git
+            try:
+                with redirect_stderr(buffer):
+                    repo_dir = manage_skill_sources.git_clone_repo("owner/repo", "main", root)
+            finally:
+                manage_skill_sources.run_git = original_run_git
+
+            self.assertEqual(repo_dir, root / "repo")
+            self.assertIn("Falling back to SSH clone for owner/repo", buffer.getvalue())
+            self.assertTrue(any("git@github.com:owner/repo.git" in call for call in calls))
 
 
 class ScanTests(unittest.TestCase):
@@ -680,6 +731,30 @@ class ScanTests(unittest.TestCase):
             self.assertEqual(result["skipped"][0]["name"], "reviewer")
             content = config_toml.read_text(encoding="utf-8")
             self.assertNotIn(manage_skill_sources.MANAGED_AGENTS_BEGIN, content)
+
+    def test_register_codex_agents_warns_on_partially_managed_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".codex" / "agents" / "reviewer.toml").write_text("[agent]\n", encoding="utf-8")
+            config_toml = repo_root / ".codex" / "config.toml"
+            config_toml.write_text(
+                "[agents.reviewer]\npath = \".codex/agents/reviewer.toml\"\nmodel = \"custom\"\n",
+                encoding="utf-8",
+            )
+
+            buffer = io.StringIO()
+            with redirect_stderr(buffer):
+                result = manage_skill_sources.register_codex_agents(
+                    repo_root=repo_root,
+                    agent_names=["reviewer"],
+                )
+
+            self.assertEqual(result["registered"], [])
+            self.assertEqual(result["skipped"][0]["reason"], "existing partially managed agent config")
+            self.assertIn("partially managed", buffer.getvalue())
 
 
 class RegistryTests(unittest.TestCase):

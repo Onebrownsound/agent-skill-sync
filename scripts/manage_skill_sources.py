@@ -48,6 +48,10 @@ def timestamp() -> str:
     return datetime.now().isoformat()
 
 
+def warn(message: str) -> None:
+    print(f"warning: {message}", file=sys.stderr)
+
+
 def load_registry(path: Path) -> dict:
     if not path.is_file():
         return {"version": 1, "skills": {}}
@@ -478,7 +482,8 @@ def git_sparse_checkout(repo: str, ref: str, skill_path: str, dest_dir: Path) ->
     ]
     try:
         run_git(clone_cmd)
-    except SourceError:
+    except SourceError as exc:
+        warn(f"Falling back to SSH clone for {repo} after HTTPS clone failed ({exc}).")
         fallback = [
             "git",
             "clone",
@@ -512,7 +517,8 @@ def git_clone_repo(repo: str, ref: str, dest_dir: Path) -> Path:
     ]
     try:
         run_git(clone_cmd)
-    except SourceError:
+    except SourceError as exc:
+        warn(f"Falling back to SSH clone for {repo} after HTTPS clone failed ({exc}).")
         fallback = [
             "git",
             "clone",
@@ -1038,6 +1044,15 @@ def is_exact_managed_codex_agent_section(section: str, name: str) -> bool:
     return lines == [f"[agents.{name}]", expected_codex_agent_config_line(name)]
 
 
+def is_partially_managed_codex_agent_section(section: str, name: str) -> bool:
+    if is_exact_managed_codex_agent_section(section, name):
+        return False
+    lines = [line.strip() for line in section.splitlines() if line.strip()]
+    return expected_codex_agent_config_line(name) in lines and any(
+        line != f"[agents.{name}]" for line in lines if line != expected_codex_agent_config_line(name)
+    )
+
+
 def merge_agent_names(existing_names: list[str], requested_names: list[str]) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
@@ -1093,7 +1108,13 @@ def register_codex_agents(*, repo_root: Path, agent_names: list[str]) -> dict:
         if prefix_match:
             updated_prefix, section = prefix_match
             if not is_exact_managed_codex_agent_section(section, name):
-                skipped.append({"name": name, "reason": "existing unmanaged agent config"})
+                reason = "existing unmanaged agent config"
+                if is_partially_managed_codex_agent_section(section, name):
+                    reason = "existing partially managed agent config"
+                    warn(
+                        f"Skipping Codex agent '{name}' because an existing config entry looks partially managed."
+                    )
+                skipped.append({"name": name, "reason": reason})
                 continue
             prefix = updated_prefix
         else:
@@ -1101,7 +1122,13 @@ def register_codex_agents(*, repo_root: Path, agent_names: list[str]) -> dict:
             if suffix_match:
                 updated_suffix, section = suffix_match
                 if not is_exact_managed_codex_agent_section(section, name):
-                    skipped.append({"name": name, "reason": "existing unmanaged agent config"})
+                    reason = "existing unmanaged agent config"
+                    if is_partially_managed_codex_agent_section(section, name):
+                        reason = "existing partially managed agent config"
+                        warn(
+                            f"Skipping Codex agent '{name}' because an existing config entry looks partially managed."
+                        )
+                    skipped.append({"name": name, "reason": reason})
                     continue
                 suffix = updated_suffix
 
