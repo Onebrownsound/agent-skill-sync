@@ -3,4 +3,5 @@ __pycache__/
 config/targets.local.json
 config/skill-sources.local.json
 config/deploy-state.local.json
+.codex/*.agent-skill-sync.bak
 *.log
