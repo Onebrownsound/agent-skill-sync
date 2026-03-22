@@ -472,6 +472,7 @@ class ScanTests(unittest.TestCase):
                 "ref": "main",
                 "resolved_revision": "abc123",
                 "status": "proposed",
+                "generated_at": "2026-03-22T12:00:00",
                 "items": [
                     {
                         "source_path": ".agents/skills/gstack-review",
@@ -490,11 +491,53 @@ class ScanTests(unittest.TestCase):
 
             self.assertEqual(loaded, plan)
 
+    def test_load_install_plan_accepts_extended_status_values(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            repo_root = prepare_repo_root(Path(root_dir))
+            for status in ("reviewed", "superseded"):
+                plan = {
+                    "version": 1,
+                    "repo": "garrytan/gstack",
+                    "ref": "main",
+                    "resolved_revision": "abc123",
+                    "status": status,
+                    "generated_at": "2026-03-22T12:00:00",
+                    "items": [],
+                }
+                plan_path = manage_skill_sources.install_plan_path(repo_root, f"garrytan/{status}")
+
+                manage_skill_sources.save_install_plan(plan_path, plan)
+                loaded = manage_skill_sources.load_install_plan(plan_path)
+
+                self.assertEqual(loaded["status"], status)
+
     def test_load_install_plan_rejects_invalid_shape(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
             repo_root = prepare_repo_root(Path(root_dir))
             plan_path = manage_skill_sources.install_plan_path(repo_root, "garrytan/gstack")
             plan_path.write_text('{"version":1,"repo":"garrytan/gstack"}', encoding="utf-8")
+
+            with self.assertRaises(manage_skill_sources.SourceError):
+                manage_skill_sources.load_install_plan(plan_path)
+
+    def test_load_install_plan_rejects_invalid_timestamp_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            repo_root = prepare_repo_root(Path(root_dir))
+            plan_path = manage_skill_sources.install_plan_path(repo_root, "garrytan/gstack")
+            plan_path.write_text(
+                (
+                    '{'
+                    '"version":1,'
+                    '"repo":"garrytan/gstack",'
+                    '"ref":"main",'
+                    '"resolved_revision":"abc123",'
+                    '"status":"proposed",'
+                    '"generated_at":"not-a-timestamp",'
+                    '"items":[]'
+                    '}'
+                ),
+                encoding="utf-8",
+            )
 
             with self.assertRaises(manage_skill_sources.SourceError):
                 manage_skill_sources.load_install_plan(plan_path)
@@ -576,6 +619,51 @@ class ScanTests(unittest.TestCase):
                     source_repo_root=source_repo,
                 )
 
+    def test_apply_install_plan_is_idempotent_after_initial_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            source_repo = root / "external-repo"
+            make_skill(source_repo / ".agents" / "skills", "gstack-review")
+
+            plan = {
+                "version": 1,
+                "repo": "garrytan/gstack",
+                "ref": "main",
+                "resolved_revision": "scan123",
+                "status": "applied",
+                "generated_at": "2026-03-22T12:00:00",
+                "last_applied_at": "2026-03-22T12:05:00",
+                "items": [
+                    {
+                        "source_path": ".agents/skills/gstack-review",
+                        "kind": "skill",
+                        "bucket": "shared",
+                        "confidence": "high",
+                        "reason": "Path matches .agents/skills convention",
+                        "approved": True,
+                    }
+                ],
+            }
+
+            first = manage_skill_sources.apply_install_plan(
+                repo_root=repo_root,
+                plan=plan,
+                source_repo_root=source_repo,
+            )
+            second = manage_skill_sources.apply_install_plan(
+                repo_root=repo_root,
+                plan=plan,
+                source_repo_root=source_repo,
+            )
+
+            self.assertEqual(first["installed_total"], 1)
+            self.assertEqual(first["skipped_total"], 0)
+            self.assertEqual(second["installed_total"], 0)
+            self.assertEqual(second["skipped_total"], 1)
+            self.assertEqual(second["results"][0]["status"], "skipped")
+            self.assertIn("already exists", second["results"][0]["reason"])
+
     def test_update_plan_check_metadata_records_preview_state(self) -> None:
         plan = {
             "version": 1,
@@ -583,6 +671,7 @@ class ScanTests(unittest.TestCase):
             "ref": "main",
             "resolved_revision": "scan123",
             "status": "proposed",
+            "generated_at": "2026-03-22T12:00:00",
             "items": [],
         }
         updated = manage_skill_sources.update_plan_check_metadata(
@@ -595,6 +684,7 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(updated["last_checked_revision"], "scan123")
         self.assertEqual(updated["last_check_result"]["installed_total"], 2)
         self.assertIn("last_checked_at", updated)
+        self.assertEqual(updated["generated_at"], "2026-03-22T12:00:00")
 
     def test_update_plan_apply_metadata_records_apply_state(self) -> None:
         plan = {
@@ -603,6 +693,7 @@ class ScanTests(unittest.TestCase):
             "ref": "main",
             "resolved_revision": "scan123",
             "status": "proposed",
+            "generated_at": "2026-03-22T12:00:00",
             "items": [],
         }
         updated = manage_skill_sources.update_plan_apply_metadata(
@@ -614,6 +705,7 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(updated["last_checked_revision"], "scan123")
         self.assertEqual(updated["last_check_result"]["skipped_total"], 1)
         self.assertIn("last_applied_at", updated)
+        self.assertEqual(updated["generated_at"], "2026-03-22T12:00:00")
 
     def test_extract_json_payload_finds_first_json_object_in_text(self) -> None:
         payload = manage_skill_sources.extract_json_payload("prefix\n{\"items\": []}\nsuffix")

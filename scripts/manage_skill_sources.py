@@ -24,6 +24,7 @@ import zipfile
 VALID_BUCKETS = {"shared", "codex", "claude"}
 VALID_SCOPES = {"repo", "local"}
 VALID_PLAN_CONFIDENCE = {"high", "medium", "low"}
+VALID_PLAN_STATUSES = {"proposed", "reviewed", "applied", "superseded"}
 VALID_ANALYSIS_BACKENDS = {"heuristic", "claude", "codex"}
 DEFAULT_REF = "main"
 DEPLOY_STATE_FILENAME = "deploy-state.local.json"
@@ -150,6 +151,18 @@ def validate_install_plan_item(item: dict) -> None:
         raise SourceError("Install plan item 'reason' must be a non-empty string.")
 
 
+def validate_optional_iso_timestamp(plan: dict, field: str) -> None:
+    value = plan.get(field)
+    if value is None:
+        return
+    if not isinstance(value, str) or not value:
+        raise SourceError(f"Install plan '{field}' must be an ISO-8601 string when present.")
+    try:
+        datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise SourceError(f"Install plan '{field}' must be a valid ISO-8601 timestamp.") from exc
+
+
 def validate_install_plan(plan: dict) -> None:
     if not isinstance(plan, dict):
         raise SourceError("Install plan must be an object.")
@@ -167,10 +180,14 @@ def validate_install_plan(plan: dict) -> None:
         raise SourceError("Install plan 'resolved_revision' must be a non-empty string.")
     if not isinstance(plan["status"], str) or not plan["status"]:
         raise SourceError("Install plan 'status' must be a non-empty string.")
+    if plan["status"] not in VALID_PLAN_STATUSES:
+        raise SourceError(f"Unsupported install plan status: {plan['status']}")
     if not isinstance(plan["items"], list):
         raise SourceError("Install plan 'items' must be an array.")
     for item in plan["items"]:
         validate_install_plan_item(item)
+    for field in ("generated_at", "last_checked_at", "last_applied_at"):
+        validate_optional_iso_timestamp(plan, field)
 
 
 def validate_analysis_payload(payload: dict) -> list[dict]:

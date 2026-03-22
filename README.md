@@ -204,7 +204,9 @@ python scripts/manage_skill_sources.py apply-install-plan --plan config/install-
 
 Current V1 rules:
 
-- install plans are saved under `config/install-plans/`
+- install plans are saved under `config/install-plans/<owner>-<repo>.json`
+- plan `status` values are `proposed`, `reviewed`, `applied`, or `superseded`
+- plan timestamps like `generated_at`, `last_checked_at`, and `last_applied_at` use ISO-8601 strings
 - dry runs update plan metadata but do not mutate repo files
 - only `approved: true` plan items are applied
 - plan-backed applies fail closed if the saved upstream revision no longer matches
