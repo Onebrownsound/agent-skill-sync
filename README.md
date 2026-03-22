@@ -128,6 +128,10 @@ Typical commands:
 ```powershell
 python scripts/manage_skill_sources.py list
 python scripts/manage_skill_sources.py scan-github --repo owner/repo
+python scripts/manage_skill_sources.py analyze-github-layout --repo garrytan/gstack --backend heuristic
+python scripts/manage_skill_sources.py show-install-plan --plan config/install-plans/garrytan-gstack.json
+python scripts/manage_skill_sources.py apply-install-plan --plan config/install-plans/garrytan-gstack.json --check
+python scripts/manage_skill_sources.py apply-install-plan --plan config/install-plans/garrytan-gstack.json
 python scripts/manage_skill_sources.py scan-github --repo owner/repo --format json
 python scripts/manage_skill_sources.py install-github-batch --repo owner/repo --select shared --select claude
 python scripts/manage_skill_sources.py install-github-select --repo owner/repo --item skills/configure-ecc --item .claude/skills/everything-claude-code
@@ -186,6 +190,26 @@ Current rule:
 
 - skills can be batch installed
 - agent assets are scanned and listed, but are opt-in for copy and registration
+
+## Ambiguous Repo Plans
+
+For repos that do not follow the recognized layouts cleanly, use an explicit install-plan workflow instead of guessing:
+
+```powershell
+python scripts/manage_skill_sources.py analyze-github-layout --repo garrytan/gstack --backend heuristic
+python scripts/manage_skill_sources.py show-install-plan --plan config/install-plans/garrytan-gstack.json
+python scripts/manage_skill_sources.py apply-install-plan --plan config/install-plans/garrytan-gstack.json --check
+python scripts/manage_skill_sources.py apply-install-plan --plan config/install-plans/garrytan-gstack.json
+```
+
+Current V1 rules:
+
+- install plans are saved under `config/install-plans/`
+- dry runs update plan metadata but do not mutate repo files
+- only `approved: true` plan items are applied
+- plan-backed applies fail closed if the saved upstream revision no longer matches
+- `--backend heuristic` is deterministic and available now
+- `--backend claude` and `--backend codex` use local shell analyzers and must return valid JSON-only install items
 
 ## Agent Defaults
 

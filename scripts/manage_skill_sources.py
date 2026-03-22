@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,8 @@ import zipfile
 
 VALID_BUCKETS = {"shared", "codex", "claude"}
 VALID_SCOPES = {"repo", "local"}
+VALID_PLAN_CONFIDENCE = {"high", "medium", "low"}
+VALID_ANALYSIS_BACKENDS = {"heuristic", "claude", "codex"}
 DEFAULT_REF = "main"
 DEPLOY_STATE_FILENAME = "deploy-state.local.json"
 MANAGED_AGENTS_BEGIN = "# BEGIN agent-skill-sync managed agents"
@@ -86,6 +89,33 @@ def registry_path(repo_root: Path, scope: str) -> Path:
     return repo_root / "config" / filename
 
 
+def install_plan_dir(repo_root: Path) -> Path:
+    return repo_root / "config" / "install-plans"
+
+
+def install_plan_slug(repo: str) -> str:
+    return repo.replace("/", "-")
+
+
+def install_plan_path(repo_root: Path, repo: str) -> Path:
+    return install_plan_dir(repo_root) / f"{install_plan_slug(repo)}.json"
+
+
+def analysis_command_env_var(backend: str) -> str:
+    return f"AGENT_SKILL_SYNC_{backend.upper()}_COMMAND"
+
+
+def backend_command_prefix(backend: str) -> list[str]:
+    env_value = os.environ.get(analysis_command_env_var(backend))
+    if env_value:
+        return shlex.split(env_value)
+    if backend == "claude":
+        return ["claude"]
+    if backend == "codex":
+        return ["codex", "exec"]
+    raise SourceError(f"Unsupported analysis backend: {backend}")
+
+
 def registry_key(bucket: str, name: str) -> str:
     return f"{bucket}/{name}"
 
@@ -98,6 +128,87 @@ def validate_bucket(bucket: str) -> None:
 def validate_skill_name(name: str) -> None:
     if not name or "/" in name or "\\" in name or name in {".", ".."}:
         raise SourceError("Skill name must be a single path segment.")
+
+
+def validate_install_plan_item(item: dict) -> None:
+    if not isinstance(item, dict):
+        raise SourceError("Install plan items must be objects.")
+    required = {"source_path", "kind", "bucket", "confidence", "reason", "approved"}
+    missing = sorted(key for key in required if key not in item)
+    if missing:
+        raise SourceError(f"Install plan item missing required field(s): {', '.join(missing)}")
+    if item["kind"] != "skill":
+        raise SourceError(f"Unsupported install plan item kind: {item['kind']}")
+    validate_bucket(item["bucket"])
+    if item["confidence"] not in VALID_PLAN_CONFIDENCE:
+        raise SourceError(f"Unsupported install plan confidence: {item['confidence']}")
+    if not isinstance(item["approved"], bool):
+        raise SourceError("Install plan item 'approved' must be a boolean.")
+    if not isinstance(item["source_path"], str) or not item["source_path"].strip():
+        raise SourceError("Install plan item 'source_path' must be a non-empty string.")
+    if not isinstance(item["reason"], str) or not item["reason"].strip():
+        raise SourceError("Install plan item 'reason' must be a non-empty string.")
+
+
+def validate_install_plan(plan: dict) -> None:
+    if not isinstance(plan, dict):
+        raise SourceError("Install plan must be an object.")
+    required = {"version", "repo", "ref", "resolved_revision", "status", "items"}
+    missing = sorted(key for key in required if key not in plan)
+    if missing:
+        raise SourceError(f"Install plan missing required field(s): {', '.join(missing)}")
+    if plan["version"] != 1:
+        raise SourceError(f"Unsupported install plan version: {plan['version']}")
+    if not isinstance(plan["repo"], str) or "/" not in plan["repo"]:
+        raise SourceError("Install plan 'repo' must be in owner/repo form.")
+    if not isinstance(plan["ref"], str) or not plan["ref"]:
+        raise SourceError("Install plan 'ref' must be a non-empty string.")
+    if not isinstance(plan["resolved_revision"], str) or not plan["resolved_revision"]:
+        raise SourceError("Install plan 'resolved_revision' must be a non-empty string.")
+    if not isinstance(plan["status"], str) or not plan["status"]:
+        raise SourceError("Install plan 'status' must be a non-empty string.")
+    if not isinstance(plan["items"], list):
+        raise SourceError("Install plan 'items' must be an array.")
+    for item in plan["items"]:
+        validate_install_plan_item(item)
+
+
+def validate_analysis_payload(payload: dict) -> list[dict]:
+    if not isinstance(payload, dict):
+        raise SourceError("Analysis result must be an object.")
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise SourceError("Analysis result must contain an 'items' array.")
+    for item in items:
+        validate_install_plan_item(item)
+    return items
+
+
+def save_install_plan(path: Path, plan: dict) -> None:
+    validate_install_plan(plan)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def load_install_plan(path: Path) -> dict:
+    if not path.is_file():
+        raise SourceError(f"Install plan not found: {path}")
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    validate_install_plan(plan)
+    return plan
+
+
+def install_plan_from_items(scan: dict, items: list[dict], backend: str) -> dict:
+    return {
+        "version": 1,
+        "repo": scan["repo"],
+        "ref": scan["ref"],
+        "resolved_revision": scan["resolved_revision"],
+        "status": "proposed",
+        "analysis_backend": backend,
+        "generated_at": timestamp(),
+        "items": items,
+    }
 
 
 def ensure_skill_dir(path: Path) -> None:
@@ -695,6 +806,171 @@ def scan_github_repo(
         )
 
 
+def proposed_install_plan_from_scan(scan: dict) -> dict:
+    items: list[dict] = []
+    for item in sorted(scan.get("groups", {}).get("unknown", []), key=lambda candidate: candidate["path"]):
+        if item["asset_type"] != "skill":
+            continue
+        path = item["path"]
+        confidence = "low"
+        approved = False
+        reason = "Ambiguous installable path requires review"
+        bucket = "shared"
+
+        if path.startswith(".agents/skills/"):
+            confidence = "high"
+            approved = True
+            reason = "Path matches .agents/skills convention and contains SKILL.md"
+        elif "/" not in path.strip("/"):
+            confidence = "medium"
+            approved = False
+            reason = "Top-level directory contains SKILL.md but layout is not a recognized harness convention"
+
+        items.append(
+            {
+                "source_path": path,
+                "kind": "skill",
+                "bucket": bucket,
+                "confidence": confidence,
+                "reason": reason,
+                "approved": approved,
+            }
+        )
+
+    return install_plan_from_items(scan, items, "heuristic")
+
+
+def layout_analysis_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["items"],
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["source_path", "kind", "bucket", "confidence", "reason", "approved"],
+                    "properties": {
+                        "source_path": {"type": "string"},
+                        "kind": {"type": "string", "enum": ["skill"]},
+                        "bucket": {"type": "string", "enum": sorted(VALID_BUCKETS)},
+                        "confidence": {"type": "string", "enum": sorted(VALID_PLAN_CONFIDENCE)},
+                        "reason": {"type": "string"},
+                        "approved": {"type": "boolean"},
+                    },
+                },
+            }
+        },
+    }
+
+
+def build_layout_analysis_prompt(scan: dict) -> str:
+    inventory = json.dumps(
+        {
+            "repo": scan["repo"],
+            "ref": scan["ref"],
+            "resolved_revision": scan["resolved_revision"],
+            "skills": scan.get("skills", []),
+            "agents": scan.get("agents", []),
+            "groups": scan.get("groups", {}),
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    return (
+        "You are analyzing a GitHub repository for import into a source-of-truth skill sync repo.\n\n"
+        "Framework rules:\n"
+        "- shared skills go to skills/shared/<name>\n"
+        "- codex-only skills go to skills/codex/<name>\n"
+        "- claude-only skills go to skills/claude/<name>\n"
+        "- only propose skill items in this response\n"
+        "- ambiguous items should be proposed explicitly, never assumed silently\n"
+        "- prefer approved=true only for high-confidence mappings\n"
+        "- .agents/skills/* is usually a strong shared-skill signal\n"
+        "- top-level directories with SKILL.md are weaker signals and usually require review\n"
+        "- do not invent files or paths\n"
+        "- return JSON only matching the provided schema\n\n"
+        f"Scan inventory:\n{inventory}\n"
+    )
+
+
+def extract_json_payload(text: str) -> dict:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "{[":
+            continue
+        try:
+            payload, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            raise SourceError("Analysis backend returned a JSON value that is not an object.")
+        if isinstance(payload.get("structured_output"), dict):
+            return payload["structured_output"]
+        return payload
+    raise SourceError("Analysis backend did not return valid JSON.")
+
+
+def run_command_capture(command: list[str], *, input_text: str | None = None) -> str:
+    result = subprocess.run(
+        command,
+        input=input_text,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise SourceError(result.stderr.strip() or f"Command failed: {' '.join(command)}")
+    return result.stdout
+
+
+def run_claude_layout_analysis(
+    prompt: str,
+    *,
+    runner=run_command_capture,
+) -> dict:
+    schema = json.dumps(layout_analysis_schema(), separators=(",", ":"))
+    command = backend_command_prefix("claude") + [
+        "-p",
+        "--output-format",
+        "json",
+        "--json-schema",
+        schema,
+        "--allowed-tools",
+        "",
+        "--permission-mode",
+        "bypassPermissions",
+    ]
+    stdout = runner(command, input_text=prompt)
+    return extract_json_payload(stdout)
+
+
+def run_codex_layout_analysis(
+    prompt: str,
+    *,
+    runner=run_command_capture,
+) -> dict:
+    command = backend_command_prefix("codex")
+    stdout = runner(command, input_text=prompt)
+    return extract_json_payload(stdout)
+
+
+def analyze_layout_with_backend(scan: dict, backend: str, *, runner=run_command_capture) -> dict:
+    if backend not in VALID_ANALYSIS_BACKENDS:
+        raise SourceError(f"Unsupported analysis backend: {backend}")
+    if backend == "heuristic":
+        return proposed_install_plan_from_scan(scan)
+
+    prompt = build_layout_analysis_prompt(scan)
+    if backend == "claude":
+        payload = run_claude_layout_analysis(prompt, runner=runner)
+    else:
+        payload = run_codex_layout_analysis(prompt, runner=runner)
+    items = validate_analysis_payload(payload)
+    return install_plan_from_items(scan, items, backend)
+
+
 def load_github_source_for_record(record: dict) -> tuple[Path, str]:
     source = record["source"]
     github_source = GithubSource(
@@ -862,6 +1138,131 @@ def install_skill_items(
         "skipped_total": skipped_total,
         "results": results,
     }
+
+
+def apply_install_plan(
+    *,
+    repo_root: Path,
+    plan: dict,
+    source_repo_root: Path,
+    scope: str = "repo",
+) -> dict:
+    validate_install_plan(plan)
+    approved_items = [item for item in plan["items"] if item["approved"]]
+    skipped_items = [item for item in plan["items"] if not item["approved"]]
+    install_items: list[dict] = []
+
+    for item in approved_items:
+        source_path = source_repo_root / item["source_path"]
+        ensure_skill_dir(source_path)
+        install_items.append(
+            {
+                "name": source_path.name,
+                "path": item["source_path"],
+                "bucket": item["bucket"],
+                "repo": plan["repo"],
+                "ref": plan["ref"],
+                "resolved_revision": plan["resolved_revision"],
+            }
+        )
+
+    result = install_skill_items(
+        repo_root=repo_root,
+        items=install_items,
+        source_repo_root=source_repo_root,
+        scope=scope,
+    )
+    for item in skipped_items:
+        result["results"].append(
+            {
+                "status": "skipped",
+                "path": item["source_path"],
+                "bucket": item["bucket"],
+                "reason": "plan item not approved",
+            }
+        )
+    result["skipped_total"] += len(skipped_items)
+    return result
+
+
+def preview_install_plan(
+    *,
+    repo_root: Path,
+    plan: dict,
+    source_repo_root: Path,
+) -> dict:
+    validate_install_plan(plan)
+    approved_items = [item for item in plan["items"] if item["approved"]]
+    skipped_items = [item for item in plan["items"] if not item["approved"]]
+    results: list[dict] = []
+    installed_total = 0
+    skipped_total = 0
+
+    for item in approved_items:
+        source_path = source_repo_root / item["source_path"]
+        ensure_skill_dir(source_path)
+        skill_name = source_path.name
+        key = registry_key(item["bucket"], skill_name)
+        dest = skill_dest(repo_root, item["bucket"], skill_name)
+        try:
+            ensure_key_available(repo_root, key)
+            if dest.exists():
+                raise SourceError(f"Destination already exists in repo: {dest}")
+            results.append(
+                {
+                    "status": "installed",
+                    "key": key,
+                    "path": item["source_path"],
+                    "bucket": item["bucket"],
+                }
+            )
+            installed_total += 1
+        except SourceError as exc:
+            results.append(
+                {
+                    "status": "skipped",
+                    "path": item["source_path"],
+                    "bucket": item["bucket"],
+                    "reason": str(exc),
+                }
+            )
+            skipped_total += 1
+
+    for item in skipped_items:
+        results.append(
+            {
+                "status": "skipped",
+                "path": item["source_path"],
+                "bucket": item["bucket"],
+                "reason": "plan item not approved",
+            }
+        )
+    skipped_total += len(skipped_items)
+
+    return {
+        "installed_total": installed_total,
+        "skipped_total": skipped_total,
+        "results": results,
+    }
+
+
+def update_plan_check_metadata(plan: dict, result: dict, resolved_revision: str) -> dict:
+    validate_install_plan(plan)
+    updated = dict(plan)
+    updated["last_checked_at"] = timestamp()
+    updated["last_checked_revision"] = resolved_revision
+    updated["last_check_result"] = {
+        "installed_total": result["installed_total"],
+        "skipped_total": result["skipped_total"],
+    }
+    return updated
+
+
+def update_plan_apply_metadata(plan: dict, result: dict) -> dict:
+    updated = update_plan_check_metadata(plan, result, plan["resolved_revision"])
+    updated["status"] = "applied"
+    updated["last_applied_at"] = timestamp()
+    return updated
 
 
 def install_scanned_skills(
@@ -1207,6 +1608,20 @@ def print_scan(scan: dict, output_format: str) -> None:
             print(f"  - {item['path']}")
 
 
+def print_install_plan(plan: dict, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(plan, indent=2, sort_keys=True))
+        return
+
+    print(f"Install plan: {plan['repo']} @ {plan['resolved_revision']}")
+    print(f"status: {plan['status']}")
+    print(f"items: {len(plan['items'])}")
+    for item in plan["items"]:
+        marker = "x" if item["approved"] else " "
+        print(f"  [{marker}] {item['bucket']} <- {item['source_path']} ({item['confidence']})")
+        print(f"      {item['reason']}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Install and update tracked skill sources in this repo.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1221,6 +1636,33 @@ def parse_args() -> argparse.Namespace:
     scan_parser.add_argument("--method", choices=["auto", "download", "git"], default="auto")
     scan_parser.add_argument("--format", choices=["text", "json"], default="text")
     scan_parser.add_argument("--include-unknown", action="store_true")
+
+    analyze_parser = subparsers.add_parser(
+        "analyze-github-layout",
+        help="Generate a saved install plan for an ambiguous GitHub repo layout.",
+    )
+    analyze_parser.add_argument("--repo", help="GitHub repo in owner/repo form.")
+    analyze_parser.add_argument("--url", help="GitHub repo URL.")
+    analyze_parser.add_argument("--ref", default=DEFAULT_REF)
+    analyze_parser.add_argument("--method", choices=["auto", "download", "git"], default="auto")
+    analyze_parser.add_argument("--backend", choices=sorted(VALID_ANALYSIS_BACKENDS), default="heuristic")
+    analyze_parser.add_argument("--format", choices=["text", "json"], default="text")
+
+    show_plan_parser = subparsers.add_parser(
+        "show-install-plan",
+        help="Show a saved install plan.",
+    )
+    show_plan_parser.add_argument("--plan", required=True, help="Path to a saved install plan JSON file.")
+    show_plan_parser.add_argument("--format", choices=["text", "json"], default="text")
+
+    apply_plan_parser = subparsers.add_parser(
+        "apply-install-plan",
+        help="Apply a saved install plan deterministically.",
+    )
+    apply_plan_parser.add_argument("--plan", required=True, help="Path to a saved install plan JSON file.")
+    apply_plan_parser.add_argument("--scope", choices=sorted(VALID_SCOPES), default="repo")
+    apply_plan_parser.add_argument("--method", choices=["auto", "download", "git"], default="auto")
+    apply_plan_parser.add_argument("--check", action="store_true", help="Preview the plan application without changes.")
 
     install_batch_parser = subparsers.add_parser(
         "install-github-batch",
@@ -1306,6 +1748,65 @@ def main() -> int:
                 include_unknown=args.include_unknown,
             )
             print_scan(scan, args.format)
+            return 0
+
+        if args.command == "analyze-github-layout":
+            scan = scan_github_repo(
+                repo=args.repo,
+                url=args.url,
+                ref=args.ref,
+                method=args.method,
+                include_unknown=True,
+            )
+            plan = analyze_layout_with_backend(scan, args.backend)
+            plan_path = install_plan_path(repo_root, plan["repo"])
+            save_install_plan(plan_path, plan)
+            print_install_plan(plan, args.format)
+            print(f"Saved install plan: {plan_path}")
+            return 0
+
+        if args.command == "show-install-plan":
+            plan = load_install_plan(Path(args.plan))
+            print_install_plan(plan, args.format)
+            return 0
+
+        if args.command == "apply-install-plan":
+            plan_path = Path(args.plan)
+            plan = load_install_plan(plan_path)
+            with materialize_github_repo(plan["repo"], plan["ref"], method=args.method) as (source_repo_root, resolved_revision):
+                if resolved_revision != plan["resolved_revision"]:
+                    raise SourceError(
+                        f"Install plan revision mismatch: plan has {plan['resolved_revision']}, upstream resolved to {resolved_revision}"
+                    )
+                if args.check:
+                    result = preview_install_plan(
+                        repo_root=repo_root,
+                        plan=plan,
+                        source_repo_root=source_repo_root,
+                    )
+                    plan = update_plan_check_metadata(plan, result, resolved_revision)
+                    save_install_plan(plan_path, plan)
+                    for item in result["results"]:
+                        if item["status"] == "installed":
+                            print(f"  + {item['key']} <- {item['path']}")
+                        else:
+                            print(f"  ~ {item['path']} ({item['reason']})")
+                    print("Dry run only. Re-run without --check to apply the install plan.")
+                    return 0
+
+                result = apply_install_plan(
+                    repo_root=repo_root,
+                    plan=plan,
+                    source_repo_root=source_repo_root,
+                    scope=args.scope,
+                )
+            plan = update_plan_apply_metadata(plan, result)
+            save_install_plan(plan_path, plan)
+            print(
+                f"Applied install plan {plan_path}: installed {result['installed_total']} item(s); "
+                f"skipped {result['skipped_total']}."
+            )
+            print("Run scripts/sync_skills.py --check before deploying outward.")
             return 0
 
         if args.command == "install-github-batch":

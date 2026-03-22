@@ -1,0 +1,419 @@
+{
+  "analysis_backend": "claude",
+  "generated_at": "2026-03-22T10:45:55.041928",
+  "items": [
+    {
+      "approved": false,
+      "bucket": "shared",
+      "confidence": "low",
+      "kind": "skill",
+      "reason": "Repo root as skill \u00e2\u20ac\u201d ambiguous, no harness indicator, needs review to determine if it's a meta-skill or repo-level config",
+      "source_path": "."
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal \u00e2\u20ac\u201d core gstack skill",
+      "source_path": ".agents/skills/gstack"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-benchmark"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-browse"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-canary"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-careful"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-design-consultation"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-design-review"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-document-release"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-freeze"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-guard"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-investigate"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-land-and-deploy"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-office-hours"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-plan-ceo-review"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-plan-design-review"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-plan-eng-review"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-qa"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-qa-only"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-retro"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-review"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-setup-browser-cookies"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-setup-deploy"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-ship"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-unfreeze"
+    },
+    {
+      "approved": true,
+      "bucket": "shared",
+      "confidence": "high",
+      "kind": "skill",
+      "reason": ".agents/skills/* path is a strong shared-skill signal",
+      "source_path": ".agents/skills/gstack-upgrade"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-benchmark but may be Claude-specific install format; needs content review",
+      "source_path": "benchmark"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-browse but may be Claude-specific install format; needs content review",
+      "source_path": "browse"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-canary but may be Claude-specific install format; needs content review",
+      "source_path": "canary"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-careful but may be Claude-specific install format; needs content review",
+      "source_path": "careful"
+    },
+    {
+      "approved": false,
+      "bucket": "codex",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir named 'codex' \u00e2\u20ac\u201d name strongly suggests Codex-specific skill, no .agents/skills counterpart exists; needs content review",
+      "source_path": "codex"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-design-consultation; needs content review",
+      "source_path": "design-consultation"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-design-review; needs content review",
+      "source_path": "design-review"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-document-release; needs content review",
+      "source_path": "document-release"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-freeze; needs content review",
+      "source_path": "freeze"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-upgrade; needs content review",
+      "source_path": "gstack-upgrade"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-guard; needs content review",
+      "source_path": "guard"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-investigate; needs content review",
+      "source_path": "investigate"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-land-and-deploy; needs content review",
+      "source_path": "land-and-deploy"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-office-hours; needs content review",
+      "source_path": "office-hours"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-plan-ceo-review; needs content review",
+      "source_path": "plan-ceo-review"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-plan-design-review; needs content review",
+      "source_path": "plan-design-review"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-plan-eng-review; needs content review",
+      "source_path": "plan-eng-review"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-qa; needs content review",
+      "source_path": "qa"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-qa-only; needs content review",
+      "source_path": "qa-only"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-retro; needs content review",
+      "source_path": "retro"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-review; needs content review",
+      "source_path": "review"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-setup-browser-cookies; needs content review",
+      "source_path": "setup-browser-cookies"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-setup-deploy; needs content review",
+      "source_path": "setup-deploy"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-ship; needs content review",
+      "source_path": "ship"
+    },
+    {
+      "approved": false,
+      "bucket": "claude",
+      "confidence": "medium",
+      "kind": "skill",
+      "reason": "Top-level dir without harness \u00e2\u20ac\u201d mirrors .agents/skills/gstack-unfreeze; needs content review",
+      "source_path": "unfreeze"
+    }
+  ],
+  "ref": "main",
+  "repo": "garrytan/gstack",
+  "resolved_revision": "dbd98aff32e3e68f4976dcc38e76a007a2c4a08a",
+  "status": "proposed",
+  "version": 1
+}

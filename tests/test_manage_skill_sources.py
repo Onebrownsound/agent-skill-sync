@@ -28,6 +28,7 @@ def make_skill(root: Path, name: str, body: str = "# Skill\n") -> Path:
 def prepare_repo_root(root: Path) -> Path:
     repo_root = root / "repo"
     (repo_root / "config").mkdir(parents=True, exist_ok=True)
+    (repo_root / "config" / "install-plans").mkdir(parents=True, exist_ok=True)
     (repo_root / "skills" / "shared").mkdir(parents=True, exist_ok=True)
     (repo_root / "skills" / "codex").mkdir(parents=True, exist_ok=True)
     (repo_root / "skills" / "claude").mkdir(parents=True, exist_ok=True)
@@ -456,6 +457,240 @@ class ScanTests(unittest.TestCase):
             self.assertFalse((repo_root / "skills" / "claude" / "everything-claude-code").exists())
             self.assertFalse((repo_root / ".claude" / "agents" / "researcher.md").exists())
 
+    def test_plan_path_uses_repo_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            repo_root = prepare_repo_root(Path(root_dir))
+            plan_path = manage_skill_sources.install_plan_path(repo_root, "garrytan/gstack")
+            self.assertEqual(plan_path, repo_root / "config" / "install-plans" / "garrytan-gstack.json")
+
+    def test_save_and_load_install_plan_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            repo_root = prepare_repo_root(Path(root_dir))
+            plan = {
+                "version": 1,
+                "repo": "garrytan/gstack",
+                "ref": "main",
+                "resolved_revision": "abc123",
+                "status": "proposed",
+                "items": [
+                    {
+                        "source_path": ".agents/skills/gstack-review",
+                        "kind": "skill",
+                        "bucket": "shared",
+                        "confidence": "high",
+                        "reason": "Path matches .agents/skills convention",
+                        "approved": True,
+                    }
+                ],
+            }
+            plan_path = manage_skill_sources.install_plan_path(repo_root, plan["repo"])
+
+            manage_skill_sources.save_install_plan(plan_path, plan)
+            loaded = manage_skill_sources.load_install_plan(plan_path)
+
+            self.assertEqual(loaded, plan)
+
+    def test_load_install_plan_rejects_invalid_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            repo_root = prepare_repo_root(Path(root_dir))
+            plan_path = manage_skill_sources.install_plan_path(repo_root, "garrytan/gstack")
+            plan_path.write_text('{"version":1,"repo":"garrytan/gstack"}', encoding="utf-8")
+
+            with self.assertRaises(manage_skill_sources.SourceError):
+                manage_skill_sources.load_install_plan(plan_path)
+
+    def test_apply_install_plan_installs_only_approved_items(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            source_repo = root / "external-repo"
+            make_skill(source_repo / ".agents" / "skills", "gstack-review")
+            make_skill(source_repo / ".agents" / "skills", "gstack-qa")
+
+            plan = {
+                "version": 1,
+                "repo": "garrytan/gstack",
+                "ref": "main",
+                "resolved_revision": "scan123",
+                "status": "proposed",
+                "items": [
+                    {
+                        "source_path": ".agents/skills/gstack-review",
+                        "kind": "skill",
+                        "bucket": "shared",
+                        "confidence": "high",
+                        "reason": "Path matches .agents/skills convention",
+                        "approved": True,
+                    },
+                    {
+                        "source_path": ".agents/skills/gstack-qa",
+                        "kind": "skill",
+                        "bucket": "shared",
+                        "confidence": "high",
+                        "reason": "Path matches .agents/skills convention",
+                        "approved": False,
+                    },
+                ],
+            }
+
+            result = manage_skill_sources.apply_install_plan(
+                repo_root=repo_root,
+                plan=plan,
+                source_repo_root=source_repo,
+            )
+
+            self.assertEqual(result["installed_total"], 1)
+            self.assertEqual(result["skipped_total"], 1)
+            self.assertTrue((repo_root / "skills" / "shared" / "gstack-review" / "SKILL.md").is_file())
+            self.assertFalse((repo_root / "skills" / "shared" / "gstack-qa").exists())
+
+    def test_apply_install_plan_rejects_missing_source_path(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            source_repo = root / "external-repo"
+            source_repo.mkdir(parents=True, exist_ok=True)
+
+            plan = {
+                "version": 1,
+                "repo": "garrytan/gstack",
+                "ref": "main",
+                "resolved_revision": "scan123",
+                "status": "proposed",
+                "items": [
+                    {
+                        "source_path": ".agents/skills/gstack-review",
+                        "kind": "skill",
+                        "bucket": "shared",
+                        "confidence": "high",
+                        "reason": "Path matches .agents/skills convention",
+                        "approved": True,
+                    }
+                ],
+            }
+
+            with self.assertRaises(manage_skill_sources.SourceError):
+                manage_skill_sources.apply_install_plan(
+                    repo_root=repo_root,
+                    plan=plan,
+                    source_repo_root=source_repo,
+                )
+
+    def test_update_plan_check_metadata_records_preview_state(self) -> None:
+        plan = {
+            "version": 1,
+            "repo": "garrytan/gstack",
+            "ref": "main",
+            "resolved_revision": "scan123",
+            "status": "proposed",
+            "items": [],
+        }
+        updated = manage_skill_sources.update_plan_check_metadata(
+            plan,
+            {"installed_total": 2, "skipped_total": 1},
+            "scan123",
+        )
+
+        self.assertEqual(updated["status"], "proposed")
+        self.assertEqual(updated["last_checked_revision"], "scan123")
+        self.assertEqual(updated["last_check_result"]["installed_total"], 2)
+        self.assertIn("last_checked_at", updated)
+
+    def test_update_plan_apply_metadata_records_apply_state(self) -> None:
+        plan = {
+            "version": 1,
+            "repo": "garrytan/gstack",
+            "ref": "main",
+            "resolved_revision": "scan123",
+            "status": "proposed",
+            "items": [],
+        }
+        updated = manage_skill_sources.update_plan_apply_metadata(
+            plan,
+            {"installed_total": 2, "skipped_total": 1},
+        )
+
+        self.assertEqual(updated["status"], "applied")
+        self.assertEqual(updated["last_checked_revision"], "scan123")
+        self.assertEqual(updated["last_check_result"]["skipped_total"], 1)
+        self.assertIn("last_applied_at", updated)
+
+    def test_extract_json_payload_finds_first_json_object_in_text(self) -> None:
+        payload = manage_skill_sources.extract_json_payload("prefix\n{\"items\": []}\nsuffix")
+        self.assertEqual(payload, {"items": []})
+
+    def test_extract_json_payload_uses_claude_structured_output_wrapper(self) -> None:
+        payload = manage_skill_sources.extract_json_payload(
+            '{"type":"result","structured_output":{"items":[]}}'
+        )
+        self.assertEqual(payload, {"items": []})
+
+    def test_analyze_layout_with_claude_backend_uses_expected_command_shape(self) -> None:
+        scan = {
+            "repo": "garrytan/gstack",
+            "ref": "main",
+            "resolved_revision": "scan123",
+            "skills": [],
+            "agents": [],
+            "groups": {"shared": [], "codex": [], "claude": [], "unknown": []},
+        }
+        commands: list[list[str]] = []
+        inputs: list[str | None] = []
+
+        def fake_runner(command: list[str], *, input_text=None) -> str:
+            commands.append(command)
+            inputs.append(input_text)
+            return '{"items":[]}'
+
+        plan = manage_skill_sources.analyze_layout_with_backend(scan, "claude", runner=fake_runner)
+
+        self.assertEqual(plan["analysis_backend"], "claude")
+        self.assertEqual(commands[0][0], "claude")
+        self.assertIn("--json-schema", commands[0])
+        self.assertIn("--output-format", commands[0])
+        self.assertIsInstance(inputs[0], str)
+        self.assertIn("Framework rules:", inputs[0])
+
+    def test_analyze_layout_with_codex_backend_uses_expected_command_shape(self) -> None:
+        scan = {
+            "repo": "garrytan/gstack",
+            "ref": "main",
+            "resolved_revision": "scan123",
+            "skills": [],
+            "agents": [],
+            "groups": {"shared": [], "codex": [], "claude": [], "unknown": []},
+        }
+        commands: list[list[str]] = []
+        inputs: list[str | None] = []
+
+        def fake_runner(command: list[str], *, input_text=None) -> str:
+            commands.append(command)
+            inputs.append(input_text)
+            return '{"items":[]}'
+
+        plan = manage_skill_sources.analyze_layout_with_backend(scan, "codex", runner=fake_runner)
+
+        self.assertEqual(plan["analysis_backend"], "codex")
+        self.assertEqual(commands[0][:2], ["codex", "exec"])
+        self.assertIsInstance(inputs[0], str)
+        self.assertIn("Scan inventory:", inputs[0])
+
+    def test_analyze_layout_with_backend_rejects_invalid_payload(self) -> None:
+        scan = {
+            "repo": "garrytan/gstack",
+            "ref": "main",
+            "resolved_revision": "scan123",
+            "skills": [],
+            "agents": [],
+            "groups": {"shared": [], "codex": [], "claude": [], "unknown": []},
+        }
+
+        def fake_runner(command: list[str], *, input_text=None) -> str:
+            return '{"items":[{"source_path":"x"}]}'
+
+        with self.assertRaises(manage_skill_sources.SourceError):
+            manage_skill_sources.analyze_layout_with_backend(scan, "claude", runner=fake_runner)
+
     def test_install_scanned_agents_requires_opt_in_copy(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
             root = Path(root_dir)
@@ -826,6 +1061,60 @@ class RegistryTests(unittest.TestCase):
 
 
 class CLITests(unittest.TestCase):
+    def test_proposed_install_plan_from_scan_maps_agents_skills_as_high_confidence_shared(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            source_repo = root / "source-repo"
+            make_skill(source_repo / ".agents" / "skills", "gstack-review")
+
+            scan = manage_skill_sources.scan_materialized_repo(
+                repo_root=source_repo,
+                repo="garrytan/gstack",
+                ref="main",
+                resolved_revision="scan123",
+                include_unknown=True,
+            )
+            plan = manage_skill_sources.proposed_install_plan_from_scan(scan)
+
+            self.assertEqual(plan["repo"], "garrytan/gstack")
+            self.assertEqual(plan["items"][0]["source_path"], ".agents/skills/gstack-review")
+            self.assertEqual(plan["items"][0]["bucket"], "shared")
+            self.assertEqual(plan["items"][0]["confidence"], "high")
+            self.assertTrue(plan["items"][0]["approved"])
+
+    def test_preview_install_plan_is_non_mutating(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            source_repo = root / "source-repo"
+            make_skill(source_repo / ".agents" / "skills", "gstack-review")
+            plan = {
+                "version": 1,
+                "repo": "garrytan/gstack",
+                "ref": "main",
+                "resolved_revision": "scan123",
+                "status": "proposed",
+                "items": [
+                    {
+                        "source_path": ".agents/skills/gstack-review",
+                        "kind": "skill",
+                        "bucket": "shared",
+                        "confidence": "high",
+                        "reason": "Path matches .agents/skills convention",
+                        "approved": True,
+                    }
+                ],
+            }
+
+            result = manage_skill_sources.preview_install_plan(
+                repo_root=repo_root,
+                plan=plan,
+                source_repo_root=source_repo,
+            )
+
+            self.assertEqual(result["installed_total"], 1)
+            self.assertFalse((repo_root / "skills" / "shared" / "gstack-review").exists())
+
     def test_print_scan_renders_install_plan_sections(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
             root = Path(root_dir)
