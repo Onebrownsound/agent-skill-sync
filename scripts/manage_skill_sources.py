@@ -907,6 +907,8 @@ def extract_json_payload(text: str) -> dict:
             continue
         if not isinstance(payload, dict):
             raise SourceError("Analysis backend returned a JSON value that is not an object.")
+        if isinstance(payload.get("structured_output"), dict):
+            return payload["structured_output"]
         return payload
     raise SourceError("Analysis backend did not return valid JSON.")
 
@@ -939,9 +941,8 @@ def run_claude_layout_analysis(
         "",
         "--permission-mode",
         "bypassPermissions",
-        prompt,
     ]
-    stdout = runner(command)
+    stdout = runner(command, input_text=prompt)
     return extract_json_payload(stdout)
 
 
@@ -950,8 +951,8 @@ def run_codex_layout_analysis(
     *,
     runner=run_command_capture,
 ) -> dict:
-    command = backend_command_prefix("codex") + [prompt]
-    stdout = runner(command)
+    command = backend_command_prefix("codex")
+    stdout = runner(command, input_text=prompt)
     return extract_json_payload(stdout)
 
 

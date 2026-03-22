@@ -619,6 +619,12 @@ class ScanTests(unittest.TestCase):
         payload = manage_skill_sources.extract_json_payload("prefix\n{\"items\": []}\nsuffix")
         self.assertEqual(payload, {"items": []})
 
+    def test_extract_json_payload_uses_claude_structured_output_wrapper(self) -> None:
+        payload = manage_skill_sources.extract_json_payload(
+            '{"type":"result","structured_output":{"items":[]}}'
+        )
+        self.assertEqual(payload, {"items": []})
+
     def test_analyze_layout_with_claude_backend_uses_expected_command_shape(self) -> None:
         scan = {
             "repo": "garrytan/gstack",
@@ -629,9 +635,11 @@ class ScanTests(unittest.TestCase):
             "groups": {"shared": [], "codex": [], "claude": [], "unknown": []},
         }
         commands: list[list[str]] = []
+        inputs: list[str | None] = []
 
         def fake_runner(command: list[str], *, input_text=None) -> str:
             commands.append(command)
+            inputs.append(input_text)
             return '{"items":[]}'
 
         plan = manage_skill_sources.analyze_layout_with_backend(scan, "claude", runner=fake_runner)
@@ -640,6 +648,8 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(commands[0][0], "claude")
         self.assertIn("--json-schema", commands[0])
         self.assertIn("--output-format", commands[0])
+        self.assertIsInstance(inputs[0], str)
+        self.assertIn("Framework rules:", inputs[0])
 
     def test_analyze_layout_with_codex_backend_uses_expected_command_shape(self) -> None:
         scan = {
@@ -651,15 +661,19 @@ class ScanTests(unittest.TestCase):
             "groups": {"shared": [], "codex": [], "claude": [], "unknown": []},
         }
         commands: list[list[str]] = []
+        inputs: list[str | None] = []
 
         def fake_runner(command: list[str], *, input_text=None) -> str:
             commands.append(command)
+            inputs.append(input_text)
             return '{"items":[]}'
 
         plan = manage_skill_sources.analyze_layout_with_backend(scan, "codex", runner=fake_runner)
 
         self.assertEqual(plan["analysis_backend"], "codex")
         self.assertEqual(commands[0][:2], ["codex", "exec"])
+        self.assertIsInstance(inputs[0], str)
+        self.assertIn("Scan inventory:", inputs[0])
 
     def test_analyze_layout_with_backend_rejects_invalid_payload(self) -> None:
         scan = {
