@@ -355,6 +355,8 @@ And keeps this disabled for now:
 - The sync script only applies targets that match the current host.
 - Running on Windows syncs Windows targets.
 - Running inside WSL syncs WSL targets.
+- Running `--host all` on Windows now delegates WSL targets through `wsl.exe` and then syncs Windows targets locally.
+- Cross-host target paths are rejected directly, so `/home/...` paths are never treated as `C:\home\...` by mistake.
 - `--check` prints the plan without changing anything.
 - `--apply` copies changed skills and harness-specific agents and writes a small managed manifest into the target root.
 - Every push apply that changes one or more targets mints a deployment ticket UUID.
