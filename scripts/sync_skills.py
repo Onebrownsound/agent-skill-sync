@@ -6,7 +6,9 @@ from datetime import datetime
 import hashlib
 import json
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 import uuid
@@ -22,6 +24,10 @@ SOURCE_REGISTRY_FILENAMES = ("skill-sources.json", "skill-sources.local.json")
 DEPLOY_STATE_FILENAME = "deploy-state.local.json"
 MANAGED_AGENTS_BEGIN = sync_agents.MANAGED_AGENTS_BEGIN
 MANAGED_AGENTS_END = sync_agents.MANAGED_AGENTS_END
+
+
+class SourceError(Exception):
+    pass
 
 
 def detect_repo_root() -> Path:
@@ -70,6 +76,7 @@ def parse_args() -> argparse.Namespace:
         help="Disable the default backup step for destructive push changes.",
     )
     parser.add_argument("--quiet", action="store_true", help="Reduce output.")
+    parser.add_argument("--ticket-id", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -242,7 +249,135 @@ def load_ticket_metadata(path: Path) -> dict:
     return load_json(path)
 
 
-def plan_push_target(repo_root: Path, config: dict, target_id: str, target_cfg: dict, host: str) -> dict | None:
+def target_root_for_runtime(target_cfg: dict, runtime_host: str) -> Path:
+    target_host = target_cfg.get("host")
+    path = target_cfg["path"]
+    if target_host == runtime_host:
+        return Path(path)
+    if target_host == "wsl" and runtime_host == "windows":
+        raise SourceError(
+            f"WSL target '{path}' must be synced from WSL or delegated via wsl.exe, not from Windows filesystem paths."
+        )
+    if target_host == "windows" and runtime_host in {"wsl", "linux"}:
+        raise SourceError(
+            f"Windows target '{path}' must be synced from Windows, not from a {runtime_host} runtime."
+        )
+    return Path(path)
+
+
+def to_wsl_path(path: Path) -> str:
+    path_str = str(path)
+    if len(path_str) >= 3 and path_str[1:3] == ":\\":
+        drive = path_str[0].lower()
+        tail = path_str[2:].replace("\\", "/")
+        return f"/mnt/{drive}{tail}"
+    return path.as_posix()
+
+
+def target_ids_for_host(config: dict, target_filter: set[str], host_name: str) -> list[str]:
+    target_ids: list[str] = []
+    for target_id, target_cfg in config.get("targets", {}).items():
+        if target_filter and target_id not in target_filter:
+            continue
+        if not target_cfg.get("enabled", False):
+            continue
+        if target_cfg.get("host") == host_name:
+            target_ids.append(target_id)
+    return target_ids
+
+
+def delegated_sync_args(
+    args: argparse.Namespace,
+    *,
+    host_override: str,
+    target_ids: list[str],
+) -> list[str]:
+    command = ["python3", "scripts/sync_skills.py", "--host", host_override, "--config", args.config]
+    for target_id in target_ids:
+        command.extend(["--target", target_id])
+    if args.pull:
+        command.append("--pull")
+    if args.bucket:
+        command.extend(["--bucket", args.bucket])
+    if args.rollback:
+        command.extend(["--rollback", args.rollback])
+    if args.apply:
+        command.append("--apply")
+    if args.check:
+        command.append("--check")
+    if args.clean:
+        command.append("--clean")
+    if args.no_backup:
+        command.append("--no-backup")
+    if args.quiet:
+        command.append("--quiet")
+    if args.ticket_id:
+        command.extend(["--ticket-id", args.ticket_id])
+    return command
+
+
+def run_delegated_wsl_sync(
+    repo_root: Path,
+    args: argparse.Namespace,
+    target_ids: list[str],
+    *,
+    runner=subprocess.run,
+) -> int:
+    repo_root_wsl = to_wsl_path(repo_root)
+    delegated = delegated_sync_args(args, host_override="wsl", target_ids=target_ids)
+    shell_command = "cd " + shlex.quote(repo_root_wsl) + " && " + " ".join(shlex.quote(arg) for arg in delegated)
+    result = runner(["wsl.exe", "bash", "-lc", shell_command], text=True)
+    return result.returncode
+
+
+def maybe_delegate_wsl_targets(
+    *,
+    repo_root: Path,
+    config: dict,
+    args: argparse.Namespace,
+    requested_host: str,
+    runtime_host: str,
+    runner=subprocess.run,
+) -> tuple[str | None, int | None]:
+    if runtime_host != "windows":
+        return requested_host, None
+
+    target_filter = set(args.target)
+    wsl_target_ids = target_ids_for_host(config, target_filter, "wsl")
+    if not wsl_target_ids:
+        return requested_host, None
+
+    should_delegate = requested_host in {"all", "wsl"} or bool(target_filter)
+    if not should_delegate:
+        return requested_host, None
+
+    if args.apply and not args.pull and not args.rollback and not args.ticket_id:
+        args.ticket_id = generate_ticket()
+
+    exit_code = run_delegated_wsl_sync(repo_root, args, wsl_target_ids, runner=runner)
+    if exit_code != 0:
+        return None, exit_code
+
+    if requested_host == "wsl":
+        return None, 0
+
+    if requested_host == "all":
+        return "windows", None
+
+    if target_filter and not target_ids_for_host(config, target_filter, "windows"):
+        return None, 0
+
+    return requested_host, None
+
+
+def plan_push_target(
+    repo_root: Path,
+    config: dict,
+    target_id: str,
+    target_cfg: dict,
+    host: str,
+    runtime_host: str | None = None,
+) -> dict | None:
     if not target_cfg.get("enabled", False):
         return None
     if host != "all" and target_cfg.get("host") != host:
@@ -250,7 +385,7 @@ def plan_push_target(repo_root: Path, config: dict, target_id: str, target_cfg: 
     if target_cfg.get("kind") not in ("codex", "claude"):
         raise ValueError(f"Unsupported target kind for {target_id}: {target_cfg.get('kind')}")
 
-    target_root = Path(target_cfg["path"])
+    target_root = target_root_for_runtime(target_cfg, runtime_host or host)
     manifest_name = config.get("manifest_filename", ".skill-sync-manifest.json")
     manifest_path = target_root / manifest_name
     manifest = load_manifest(manifest_path)
@@ -303,6 +438,7 @@ def plan_pull_target(
     target_cfg: dict,
     host: str,
     bucket: str | None = None,
+    runtime_host: str | None = None,
 ) -> dict | None:
     if not target_cfg.get("enabled", False):
         return None
@@ -316,7 +452,7 @@ def plan_pull_target(
     if not bucket_rel:
         raise ValueError(f"Missing catalog bucket '{bucket_name}'")
 
-    target_root = Path(target_cfg["path"])
+    target_root = target_root_for_runtime(target_cfg, runtime_host or host)
     repo_bucket_root = repo_root / bucket_rel
     live_skills = iter_skill_dirs(target_root)
 
@@ -347,13 +483,20 @@ def plan_pull_target(
     }
 
 
-def plan_rollback_target(config: dict, target_id: str, target_cfg: dict, host: str, ticket: str) -> dict | None:
+def plan_rollback_target(
+    config: dict,
+    target_id: str,
+    target_cfg: dict,
+    host: str,
+    ticket: str,
+    runtime_host: str | None = None,
+) -> dict | None:
     if host != "all" and target_cfg.get("host") != host:
         return None
     if target_cfg.get("kind") not in ("codex", "claude"):
         raise ValueError(f"Unsupported target kind for {target_id}: {target_cfg.get('kind')}")
 
-    target_root = Path(target_cfg["path"])
+    target_root = target_root_for_runtime(target_cfg, runtime_host or host)
     metadata_path = ticket_metadata_path(target_root, ticket)
     if not metadata_path.is_file():
         return None
@@ -638,6 +781,7 @@ def refresh_deploy_state(
     host: str,
     action: str,
     ticket: str | None = None,
+    runtime_host: str | None = None,
 ) -> dict:
     state_file = deploy_state_path(repo_root)
     state = load_deploy_state(state_file)
@@ -656,7 +800,7 @@ def refresh_deploy_state(
         if target_cfg.get("kind") not in ("codex", "claude"):
             continue
 
-        target_root = Path(target_cfg["path"])
+        target_root = target_root_for_runtime(target_cfg, runtime_host or host)
         manifest_name = config.get("manifest_filename", ".skill-sync-manifest.json")
         manifest = load_manifest(target_root / manifest_name)
         source_entries = collect_source_skill_entries(repo_root, config["catalog"], target_cfg["kind"])
@@ -729,7 +873,8 @@ def refresh_deploy_state(
 def main() -> int:
     args = parse_args()
     repo_root = detect_repo_root()
-    host = detect_host() if args.host == "auto" else args.host
+    runtime_host = detect_host()
+    host = runtime_host if args.host == "auto" else args.host
     config_path = (repo_root / args.config).resolve()
 
     if args.pull and args.rollback:
@@ -765,17 +910,51 @@ def main() -> int:
         print("No targets configured.", file=sys.stderr)
         return 2
 
+    host, delegated_exit = maybe_delegate_wsl_targets(
+        repo_root=repo_root,
+        config=config,
+        args=args,
+        requested_host=host,
+        runtime_host=runtime_host,
+    )
+    if delegated_exit is not None:
+        return delegated_exit
+    if host is None:
+        return 0
+
     target_filter = set(args.target)
     selected = []
     for target_id, target_cfg in targets.items():
         if target_filter and target_id not in target_filter:
             continue
         if args.rollback:
-            plan = plan_rollback_target(config, target_id, target_cfg, host, ticket=args.rollback)
+            plan = plan_rollback_target(
+                config,
+                target_id,
+                target_cfg,
+                host,
+                ticket=args.rollback,
+                runtime_host=runtime_host,
+            )
         elif args.pull:
-            plan = plan_pull_target(repo_root, config, target_id, target_cfg, host, bucket=args.bucket)
+            plan = plan_pull_target(
+                repo_root,
+                config,
+                target_id,
+                target_cfg,
+                host,
+                bucket=args.bucket,
+                runtime_host=runtime_host,
+            )
         else:
-            plan = plan_push_target(repo_root, config, target_id, target_cfg, host)
+            plan = plan_push_target(
+                repo_root,
+                config,
+                target_id,
+                target_cfg,
+                host,
+                runtime_host=runtime_host,
+            )
         if plan:
             selected.append(plan)
 
@@ -825,6 +1004,7 @@ def main() -> int:
                 host=host,
                 action="rollback",
                 ticket=args.rollback,
+                runtime_host=runtime_host,
             )
             print(f"Rollback complete for ticket {args.rollback}.")
         elif args.pull:
@@ -836,7 +1016,7 @@ def main() -> int:
                 print("Import complete.")
         else:
             backup_runs: list[dict] = []
-            deployment_ticket = generate_ticket() if any(
+            deployment_ticket = (args.ticket_id if args.ticket_id else generate_ticket()) if any(
                 plan["add"]
                 or plan["update"]
                 or (args.clean and plan["remove"])
@@ -872,6 +1052,7 @@ def main() -> int:
                 host=host,
                 action="apply",
                 ticket=deployment_ticket,
+                runtime_host=runtime_host,
             )
             print("Sync complete.")
     else:
@@ -883,6 +1064,7 @@ def main() -> int:
                 host=host,
                 action="check" if not args.rollback else "rollback-check",
                 ticket=args.rollback if args.rollback else None,
+                runtime_host=runtime_host,
             )
         print("Dry run only. Re-run with --apply to make changes.")
 

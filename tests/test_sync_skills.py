@@ -79,6 +79,72 @@ def run_cli(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+class HelperTests(unittest.TestCase):
+    def test_target_root_for_runtime_rejects_wsl_path_from_windows_runtime(self) -> None:
+        with self.assertRaises(sync_skills.SourceError):
+            sync_skills.target_root_for_runtime(
+                {"host": "wsl", "path": "/home/redme/.codex/skills"},
+                "windows",
+            )
+
+    def test_to_wsl_path_converts_windows_repo_root(self) -> None:
+        converted = sync_skills.to_wsl_path(Path(r"C:\Users\redme\01-Active\Projects\agent-skill-sync"))
+        self.assertEqual(converted, "/mnt/c/Users/redme/01-Active/Projects/agent-skill-sync")
+
+    def test_maybe_delegate_wsl_targets_shells_out_from_windows_for_host_all(self) -> None:
+        config = {
+            "targets": {
+                "windows_codex": {
+                    "enabled": True,
+                    "host": "windows",
+                    "kind": "codex",
+                    "path": r"C:\Users\redme\.codex\skills",
+                },
+                "wsl_codex": {
+                    "enabled": True,
+                    "host": "wsl",
+                    "kind": "codex",
+                    "path": "/home/redme/.codex/skills",
+                },
+            }
+        }
+        args = sync_skills.parse_args.__globals__["argparse"].Namespace(
+            config="config/targets.local.json",
+            host="all",
+            target=[],
+            pull=False,
+            bucket=None,
+            rollback=None,
+            check=True,
+            apply=False,
+            clean=False,
+            no_backup=False,
+            quiet=False,
+            ticket_id=None,
+        )
+        calls: list[list[str]] = []
+
+        def fake_runner(command: list[str], text: bool = True):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0)
+
+        local_host, delegated_exit = sync_skills.maybe_delegate_wsl_targets(
+            repo_root=Path(r"C:\Users\redme\01-Active\Projects\agent-skill-sync"),
+            config=config,
+            args=args,
+            requested_host="all",
+            runtime_host="windows",
+            runner=fake_runner,
+        )
+
+        self.assertEqual(local_host, "windows")
+        self.assertIsNone(delegated_exit)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:3], ["wsl.exe", "bash", "-lc"])
+        self.assertIn("--host wsl", calls[0][3])
+        self.assertIn("--target wsl_codex", calls[0][3])
+
+
 class PullPlanTests(unittest.TestCase):
     def test_pull_plan_only_includes_valid_non_hidden_skills(self) -> None:
         with tempfile.TemporaryDirectory() as repo_dir, tempfile.TemporaryDirectory() as live_dir:
