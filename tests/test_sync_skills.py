@@ -284,6 +284,53 @@ class TrackedSourceRefreshTests(unittest.TestCase):
             self.assertFalse((repo_root / "skills" / "shared" / "myrepo-old").exists())
 
 
+class TrackedSourceDiscoveryTests(unittest.TestCase):
+    def test_discover_tracked_skill_entries_uses_recognized_layouts(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            repo_root = Path(root_dir) / "source"
+            make_skill(repo_root / "skills", "configure-ecc")
+            make_skill(repo_root / ".claude" / "skills", "everything-claude-code")
+
+            result = sync_skills.discover_tracked_skill_entries(
+                repo_root=repo_root,
+                source_name="superpowers",
+                source_cfg={
+                    "repo": "owner/repo",
+                    "ref": "main",
+                },
+                resolved_revision="abc123",
+            )
+
+            self.assertEqual(result["configure-ecc"]["source_path"], "skills/configure-ecc")
+            self.assertEqual(result["configure-ecc"]["bucket"], "shared")
+            self.assertEqual(result["everything-claude-code"]["source_path"], ".claude/skills/everything-claude-code")
+            self.assertEqual(result["everything-claude-code"]["bucket"], "claude")
+
+    def test_discover_tracked_skill_entries_supports_top_level_pack_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            repo_root = Path(root_dir) / "source"
+            repo_root.mkdir(parents=True)
+            (repo_root / "SKILL.md").write_text("# root\n", encoding="utf-8")
+            make_skill(repo_root, "browse")
+            make_skill(repo_root, "qa")
+
+            result = sync_skills.discover_tracked_skill_entries(
+                repo_root=repo_root,
+                source_name="gstack",
+                source_cfg={
+                    "repo": "owner/repo",
+                    "ref": "main",
+                    "prefix": "gstack-",
+                    "root_name": "gstack",
+                },
+                resolved_revision="abc123",
+            )
+
+            self.assertEqual(result["gstack"]["source_path"], ".")
+            self.assertEqual(result["gstack-browse"]["source_path"], "browse")
+            self.assertEqual(result["gstack-qa"]["source_path"], "qa")
+
+
 class PullPlanTests(unittest.TestCase):
     def test_pull_plan_only_includes_valid_non_hidden_skills(self) -> None:
         with tempfile.TemporaryDirectory() as repo_dir, tempfile.TemporaryDirectory() as live_dir:

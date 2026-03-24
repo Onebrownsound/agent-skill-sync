@@ -570,6 +570,55 @@ def tracked_skill_bucket(source_cfg: dict, entry: dict) -> str:
     return entry.get("bucket", source_cfg.get("bucket", "shared"))
 
 
+def discover_tracked_skill_entries(
+    *,
+    repo_root: Path,
+    source_name: str,
+    source_cfg: dict,
+    resolved_revision: str,
+) -> dict[str, dict]:
+    skill_map = source_cfg.get("skill_map", {})
+    if skill_map:
+        return skill_map
+
+    import manage_skill_sources
+
+    discovered: dict[str, dict] = {}
+    prefix = source_cfg.get("prefix", "")
+    root_name = source_cfg.get("root_name")
+    default_bucket = source_cfg.get("bucket", "shared")
+    scan = manage_skill_sources.scan_materialized_repo(
+        repo_root=repo_root,
+        repo=source_cfg["repo"],
+        ref=source_cfg.get("ref", "main"),
+        resolved_revision=resolved_revision,
+        include_unknown=True,
+    )
+
+    if (repo_root / "SKILL.md").is_file():
+        output_name = root_name or (f"{prefix}{source_name}" if prefix else source_name)
+        discovered[output_name] = {"source_path": ".", "bucket": default_bucket}
+
+    for item in scan["skills"]:
+        source_path = item["path"]
+        if source_path in {"", "."}:
+            continue
+
+        if item["bucket"] != "unknown":
+            bucket = item["bucket"]
+        elif "/" not in source_path.strip("/"):
+            bucket = default_bucket
+        else:
+            continue
+
+        output_name = f"{prefix}{item['name']}" if prefix else item["name"]
+        if output_name in discovered:
+            raise SourceError(f"Tracked source '{source_name}' produced duplicate skill name '{output_name}'")
+        discovered[output_name] = {"source_path": source_path, "bucket": bucket}
+
+    return discovered
+
+
 def refresh_tracked_source_catalog(
     *,
     actual_repo_root: Path,
@@ -583,7 +632,6 @@ def refresh_tracked_source_catalog(
 
     repo_url = source_cfg["repo"]
     ref = source_cfg.get("ref", "main")
-    skill_map = source_cfg.get("skill_map", {})
     cache_root = actual_repo_root / ".tracked-repos-cache"
     cache_dir = sync_tracked_repos.cache_dir_for_source(source_name, cache_root)
     source_id = tracked_source_id(source_name)
@@ -609,6 +657,12 @@ def refresh_tracked_source_catalog(
         ignore_names={".git"},
     )
     overlays_root = source_imprints.overlays_root(catalog_repo_root, source_id)
+    skill_map = discover_tracked_skill_entries(
+        repo_root=imprint_root,
+        source_name=source_name,
+        source_cfg=source_cfg,
+        resolved_revision=commit,
+    )
 
     state_path = tracked_source_state_path(actual_repo_root)
     state = load_tracked_source_state(state_path)
