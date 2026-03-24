@@ -226,7 +226,7 @@ class TrackedSourceRefreshTests(unittest.TestCase):
             self.assertTrue((repo_root / "sources" / "tracked__myrepo" / "imprint" / "SKILL.md").is_file())
             self.assertTrue((repo_root / "skills" / "shared" / "myrepo" / "SKILL.md").is_file())
             self.assertTrue((repo_root / "skills" / "shared" / "myrepo-sub" / "SKILL.md").is_file())
-            registry = sync_skills.load_json(repo_root / "config" / "tracked-skill-sources.local.json")
+            registry = sync_skills.load_json(repo_root / "config" / "tracked-skill-sources.json")
             self.assertIn("shared/myrepo", registry["skills"])
             self.assertIn("shared/myrepo-sub", registry["skills"])
 
@@ -286,6 +286,36 @@ class TrackedSourceRefreshTests(unittest.TestCase):
 
             self.assertEqual([item["key"] for item in result["stale_outputs"]], ["shared/myrepo-old"])
             self.assertFalse((repo_root / "skills" / "shared" / "myrepo-old").exists())
+
+    def test_load_tracked_source_registry_supports_legacy_local_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            repo_root = Path(root_dir) / "repo"
+            (repo_root / "config").mkdir(parents=True)
+            sync_skills.write_json(
+                repo_root / "config" / "tracked-skill-sources.local.json",
+                {
+                    "version": 1,
+                    "skills": {
+                        "shared/legacy": {
+                            "name": "legacy",
+                            "bucket": "shared",
+                            "dest": "skills/shared/legacy",
+                            "scope": "repo",
+                            "source_type": "tracked_repo",
+                            "source": {"repo": "owner/repo", "ref": "main", "path": ".", "source_name": "legacy"},
+                            "resolved_revision": "abc123",
+                            "installed_at": "2026-03-24T00:00:00",
+                            "updated_at": "2026-03-24T00:00:00",
+                        }
+                    },
+                },
+            )
+
+            registry = sync_skills.load_tracked_source_registry(
+                sync_skills.tracked_source_registry_path(repo_root)
+            )
+
+            self.assertIn("shared/legacy", registry["skills"])
 
     def test_refresh_tracked_source_catalog_rejects_key_collisions_with_existing_sources(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:

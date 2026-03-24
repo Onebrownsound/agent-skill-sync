@@ -107,9 +107,12 @@ agent-skill-sync/
 - `skills/codex`: sync only to Codex targets
 - `skills/claude`: sync only to Claude targets
 - `config/targets.local.json`: machine-local target paths and enable flags
+- `config/targets.example.json`: checked-in target and tracked-repo template
 - `config/skill-sources.json`: tracked external skill source registry for repo-managed installs
+- `config/tracked-skill-sources.json`: repo-managed registry for tracked repo imprints
 - `config/skill-sources.local.json`: machine-local external skill source registry for plugin/path installs
 - `config/deploy-state.local.json`: machine-local deployment state showing which targets have which skill revision and whether they are current
+- `config/tracked-repos-state.local.json`: machine-local tracked repo refresh state
 - `.codex/agents`: source-managed Codex agent files that can be synced to Codex targets
 - `.claude/agents`: source-managed Claude agent files that can be synced to Claude targets
 - `.codex/config.toml`: repo-local staging surface for Codex agent registration behavior
@@ -480,5 +483,9 @@ python3 scripts/sync_skills.py --apply
 - Managed targets receive a `.skill-sync-manifest.json` file so the repo can track what it deployed.
 - Managed deployment tickets and rollback backups are stored under `.skill-sync-tickets` in each target root.
 - GitHub-installed skills are tracked in `config/skill-sources.json`.
+- Tracked repo imprints are tracked in `config/tracked-skill-sources.json`.
+- Tracked repo imprint trees under `sources/*/imprint/` are generated locally by `--update-sources` and are intentionally gitignored.
+- Generated tracked catalog outputs like `skills/shared/gstack*` are local build artifacts and are intentionally gitignored.
 - Local plugin/path installs are tracked in `config/skill-sources.local.json`, which is intentionally gitignored.
 - Per-target deployment freshness is tracked in `config/deploy-state.local.json`, which is intentionally gitignored.
+- Tracked repo refresh state is tracked in `config/tracked-repos-state.local.json`, which is intentionally machine-local.

@@ -31,6 +31,43 @@
       "kind": "claude",
       "path": "C:/Users/your-user/.claude/skills"
     }
+  },
+  "tracked_repos": {
+    "gstack": {
+      "repo": "https://github.com/garrytan/gstack.git",
+      "ref": "main",
+      "skill_map": {
+        "gstack": {"source_path": "."},
+        "gstack-benchmark": {"source_path": "benchmark"},
+        "gstack-browse": {"source_path": "browse"},
+        "gstack-canary": {"source_path": "canary"},
+        "gstack-careful": {"source_path": "careful"},
+        "gstack-cso": {"source_path": "cso"},
+        "gstack-design-consultation": {"source_path": "design-consultation"},
+        "gstack-design-review": {"source_path": "design-review"},
+        "gstack-document-release": {"source_path": "document-release"},
+        "gstack-freeze": {"source_path": "freeze"},
+        "gstack-guard": {"source_path": "guard"},
+        "gstack-investigate": {"source_path": "investigate"},
+        "gstack-land-and-deploy": {"source_path": "land-and-deploy"},
+        "gstack-office-hours": {"source_path": "office-hours"},
+        "gstack-plan-ceo-review": {"source_path": "plan-ceo-review"},
+        "gstack-plan-design-review": {"source_path": "plan-design-review"},
+        "gstack-plan-eng-review": {"source_path": "plan-eng-review"},
+        "gstack-qa": {"source_path": "qa"},
+        "gstack-qa-only": {"source_path": "qa-only"},
+        "gstack-retro": {"source_path": "retro"},
+        "gstack-review": {"source_path": "review"},
+        "gstack-setup-browser-cookies": {"source_path": "setup-browser-cookies"},
+        "gstack-setup-deploy": {"source_path": "setup-deploy"},
+        "gstack-ship": {"source_path": "ship"},
+        "gstack-unfreeze": {"source_path": "unfreeze"},
+        "gstack-upgrade": {"source_path": "gstack-upgrade"}
+      }
+    },
+    "superpowers": {
+      "repo": "https://github.com/obra/superpowers.git",
+      "ref": "main"
+    }
   }
 }
-

@@ -3,5 +3,8 @@ __pycache__/
 config/targets.local.json
 config/skill-sources.local.json
 config/deploy-state.local.json
+config/tracked-repos-state.local.json
+sources/*/imprint/
+skills/shared/gstack*
 .codex/*.agent-skill-sync.bak
 *.log

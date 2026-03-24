@@ -1,0 +1,27 @@
+{
+  "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+  "skills": [
+    "shared/brainstorming",
+    "shared/dispatching-parallel-agents",
+    "shared/executing-plans",
+    "shared/finishing-a-development-branch",
+    "shared/receiving-code-review",
+    "shared/requesting-code-review",
+    "shared/subagent-driven-development",
+    "shared/systematic-debugging",
+    "shared/test-driven-development",
+    "shared/using-git-worktrees",
+    "shared/using-superpowers",
+    "shared/verification-before-completion",
+    "shared/writing-plans",
+    "shared/writing-skills"
+  ],
+  "source": {
+    "ref": "main",
+    "repo": "https://github.com/obra/superpowers.git"
+  },
+  "source_id": "tracked__superpowers",
+  "source_type": "tracked_repo",
+  "updated_at": "2026-03-24T17:07:52.261291",
+  "version": 1
+}
