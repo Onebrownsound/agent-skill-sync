@@ -1,0 +1,39 @@
+{
+  "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+  "skills": [
+    "shared/gstack",
+    "shared/gstack-benchmark",
+    "shared/gstack-browse",
+    "shared/gstack-canary",
+    "shared/gstack-careful",
+    "shared/gstack-cso",
+    "shared/gstack-design-consultation",
+    "shared/gstack-design-review",
+    "shared/gstack-document-release",
+    "shared/gstack-freeze",
+    "shared/gstack-guard",
+    "shared/gstack-investigate",
+    "shared/gstack-land-and-deploy",
+    "shared/gstack-office-hours",
+    "shared/gstack-plan-ceo-review",
+    "shared/gstack-plan-design-review",
+    "shared/gstack-plan-eng-review",
+    "shared/gstack-qa",
+    "shared/gstack-qa-only",
+    "shared/gstack-retro",
+    "shared/gstack-review",
+    "shared/gstack-setup-browser-cookies",
+    "shared/gstack-setup-deploy",
+    "shared/gstack-ship",
+    "shared/gstack-unfreeze",
+    "shared/gstack-upgrade"
+  ],
+  "source": {
+    "ref": "main",
+    "repo": "https://github.com/garrytan/gstack.git"
+  },
+  "source_id": "tracked__gstack",
+  "source_type": "tracked_repo",
+  "updated_at": "2026-03-24T17:07:54.807664",
+  "version": 1
+}

@@ -59,22 +59,22 @@ WSL can sync Windows targets directly via `/mnt/c/` path translation. No need to
 
 ## Tracked Repos
 
-Whole repos deployed directly to targets. Configured in `config/targets.local.json` under `tracked_repos`. The `--update-sources` flag:
+Tracked repos are refreshed into repo-owned imprints before normal deployment. They are configured in `config/targets.local.json` under `tracked_repos`. The `--update-sources` flag:
 
 1. Clones/pulls each tracked repo into `.tracked-repos-cache/`
-2. For **clone** targets (WSL): pulls the repo at `<skills_dir>/<name>` and creates symlinks for sub-skills
-3. For **flat_copy** targets (Windows): copies SKILL.md files as flat skill directories
-4. Records deployed SHA per target in `config/tracked-repos-state.local.json`
-5. Skips flat_copy targets already at the current commit
+2. Writes a repo-owned imprint under `sources/tracked__<name>/imprint/`
+3. Updates the tracked source registry in `config/tracked-skill-sources.json`
+4. Materializes the selected tracked skills into `skills/shared`, `skills/codex`, or `skills/claude`
+5. Runs the normal catalog sync so targets receive those skills as standard `owner: "sync"` entries
 
-This contrasts with **snapshot skills** (managed by `manage_skill_sources.py`), where individual skills are extracted from a repo into the catalog.
+`config/tracked-repos-state.local.json` only tracks machine-local refresh state. The source-of-truth content lives in the repo-owned imprint and generated catalog.
+The imprint tree and generated tracked catalog outputs are local build artifacts and may be gitignored; regenerate them with `python scripts/sync_skills.py --update-sources --check` or `--apply`.
 
 ## Owner-Aware Manifests (v2)
 
 Manifests track skill ownership:
-- `{"owner": "sync"}` — snapshot skills managed by catalog sync
-- `{"owner": "tracked:gstack"}` — skills from a tracked repo
-- `{}` — unowned, not managed by either system
+- `{"owner": "sync"}` — skills deployed from the repo catalog, including tracked repo imprints
+- `{}` — unowned, not managed by sync
 
 The sync will never remove skills it doesn't own. Use `--migrate-manifests` to upgrade v1 manifests.
 
@@ -90,4 +90,4 @@ The sync will never remove skills it doesn't own. Use `--migrate-manifests` to u
 - Treat the repo as the only place to edit source skills.
 - Do not hand-edit managed copies under `~/.codex/skills` or `~/.claude/skills` unless you are intentionally debugging drift.
 - Prefer `--check` before every `--apply`.
-- The sync only removes skills it originally installed (owner tracking). It will not touch gstack or other externally-managed skills.
+- The sync only removes skills it originally installed (owner tracking). It will not touch unowned skills.

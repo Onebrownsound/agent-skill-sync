@@ -34,6 +34,8 @@ VALID_PLAN_STATUSES = {"proposed", "reviewed", "applied", "superseded"}
 VALID_ANALYSIS_BACKENDS = {"heuristic", "claude", "codex"}
 DEFAULT_REF = "main"
 DEPLOY_STATE_FILENAME = "deploy-state.local.json"
+TRACKED_SOURCE_REGISTRY_FILENAME = "tracked-skill-sources.json"
+LEGACY_TRACKED_SOURCE_REGISTRY_FILENAME = "tracked-skill-sources.local.json"
 MANAGED_AGENTS_BEGIN = "# BEGIN agent-skill-sync managed agents"
 MANAGED_AGENTS_END = "# END agent-skill-sync managed agents"
 
@@ -97,15 +99,24 @@ def registry_path(repo_root: Path, scope: str) -> Path:
 
 
 def tracked_registry_path(repo_root: Path) -> Path:
-    return repo_root / "config" / "tracked-skill-sources.local.json"
+    return repo_root / "config" / TRACKED_SOURCE_REGISTRY_FILENAME
+
+
+def legacy_tracked_registry_path(repo_root: Path) -> Path:
+    return repo_root / "config" / LEGACY_TRACKED_SOURCE_REGISTRY_FILENAME
 
 
 def registry_specs(repo_root: Path) -> list[tuple[str, Path]]:
-    return [
+    specs = [
         ("repo", registry_path(repo_root, "repo")),
         ("local", registry_path(repo_root, "local")),
         ("tracked", tracked_registry_path(repo_root)),
     ]
+    canonical_tracked = tracked_registry_path(repo_root)
+    legacy_tracked = legacy_tracked_registry_path(repo_root)
+    if not canonical_tracked.is_file() and legacy_tracked.is_file():
+        specs.append(("tracked", legacy_tracked))
+    return specs
 
 
 def registry_file_for_scope(repo_root: Path, scope: str) -> Path:

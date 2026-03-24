@@ -25,10 +25,13 @@ import source_imprints
 SOURCE_REGISTRY_FILENAMES = (
     "skill-sources.json",
     "skill-sources.local.json",
+    "tracked-skill-sources.json",
     "tracked-skill-sources.local.json",
 )
 DEPLOY_STATE_FILENAME = "deploy-state.local.json"
 TRACKED_SOURCE_STATE_FILENAME = "tracked-repos-state.local.json"
+TRACKED_SOURCE_REGISTRY_FILENAME = "tracked-skill-sources.json"
+LEGACY_TRACKED_SOURCE_REGISTRY_FILENAME = "tracked-skill-sources.local.json"
 MANAGED_AGENTS_BEGIN = sync_agents.MANAGED_AGENTS_BEGIN
 MANAGED_AGENTS_END = sync_agents.MANAGED_AGENTS_END
 
@@ -139,10 +142,18 @@ def save_tracked_source_state(path: Path, payload: dict) -> None:
 
 
 def tracked_source_registry_path(repo_root: Path) -> Path:
-    return repo_root / "config" / "tracked-skill-sources.local.json"
+    return repo_root / "config" / TRACKED_SOURCE_REGISTRY_FILENAME
+
+
+def legacy_tracked_source_registry_path(repo_root: Path) -> Path:
+    return repo_root / "config" / LEGACY_TRACKED_SOURCE_REGISTRY_FILENAME
 
 
 def load_tracked_source_registry(path: Path) -> dict:
+    if not path.is_file():
+        legacy_path = path.with_name(LEGACY_TRACKED_SOURCE_REGISTRY_FILENAME)
+        if legacy_path != path and legacy_path.is_file():
+            path = legacy_path
     if not path.is_file():
         return {"version": 1, "skills": {}}
     payload = load_json(path)

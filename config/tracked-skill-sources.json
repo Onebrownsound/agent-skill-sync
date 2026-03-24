@@ -1,0 +1,645 @@
+{
+  "skills": {
+    "shared/brainstorming": {
+      "bucket": "shared",
+      "dest": "skills/shared/brainstorming",
+      "installed_at": "2026-03-21T17:10:55.387868",
+      "name": "brainstorming",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/brainstorming",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/dispatching-parallel-agents": {
+      "bucket": "shared",
+      "dest": "skills/shared/dispatching-parallel-agents",
+      "installed_at": "2026-03-21T17:10:55.394528",
+      "name": "dispatching-parallel-agents",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/dispatching-parallel-agents",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/executing-plans": {
+      "bucket": "shared",
+      "dest": "skills/shared/executing-plans",
+      "installed_at": "2026-03-21T17:10:55.400896",
+      "name": "executing-plans",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/executing-plans",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/finishing-a-development-branch": {
+      "bucket": "shared",
+      "dest": "skills/shared/finishing-a-development-branch",
+      "installed_at": "2026-03-21T17:10:55.408007",
+      "name": "finishing-a-development-branch",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/finishing-a-development-branch",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/gstack": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": ".",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-benchmark": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-benchmark",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-benchmark",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "benchmark",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-browse": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-browse",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-browse",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "browse",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-canary": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-canary",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-canary",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "canary",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-careful": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-careful",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-careful",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "careful",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-cso": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-cso",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-cso",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "cso",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-design-consultation": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-design-consultation",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-design-consultation",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "design-consultation",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-design-review": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-design-review",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-design-review",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "design-review",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-document-release": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-document-release",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-document-release",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "document-release",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-freeze": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-freeze",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-freeze",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "freeze",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-guard": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-guard",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-guard",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "guard",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-investigate": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-investigate",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-investigate",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "investigate",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-land-and-deploy": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-land-and-deploy",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-land-and-deploy",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "land-and-deploy",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-office-hours": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-office-hours",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-office-hours",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "office-hours",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-plan-ceo-review": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-plan-ceo-review",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-plan-ceo-review",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "plan-ceo-review",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-plan-design-review": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-plan-design-review",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-plan-design-review",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "plan-design-review",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-plan-eng-review": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-plan-eng-review",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-plan-eng-review",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "plan-eng-review",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-qa": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-qa",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-qa",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "qa",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-qa-only": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-qa-only",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-qa-only",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "qa-only",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-retro": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-retro",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-retro",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "retro",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-review": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-review",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-review",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "review",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-setup-browser-cookies": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-setup-browser-cookies",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-setup-browser-cookies",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "setup-browser-cookies",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-setup-deploy": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-setup-deploy",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-setup-deploy",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "setup-deploy",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-ship": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-ship",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-ship",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "ship",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-unfreeze": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-unfreeze",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-unfreeze",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "unfreeze",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/gstack-upgrade": {
+      "bucket": "shared",
+      "dest": "skills/shared/gstack-upgrade",
+      "installed_at": "2026-03-24T16:36:28.361678",
+      "name": "gstack-upgrade",
+      "resolved_revision": "6156122571c5b170118698a056b71d5112822f1b",
+      "scope": "repo",
+      "source": {
+        "path": "gstack-upgrade",
+        "ref": "main",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "source_name": "gstack"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:54.807664"
+    },
+    "shared/receiving-code-review": {
+      "bucket": "shared",
+      "dest": "skills/shared/receiving-code-review",
+      "installed_at": "2026-03-21T17:10:55.414520",
+      "name": "receiving-code-review",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/receiving-code-review",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/requesting-code-review": {
+      "bucket": "shared",
+      "dest": "skills/shared/requesting-code-review",
+      "installed_at": "2026-03-21T17:10:55.421124",
+      "name": "requesting-code-review",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/requesting-code-review",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/subagent-driven-development": {
+      "bucket": "shared",
+      "dest": "skills/shared/subagent-driven-development",
+      "installed_at": "2026-03-21T17:10:55.429676",
+      "name": "subagent-driven-development",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/subagent-driven-development",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/systematic-debugging": {
+      "bucket": "shared",
+      "dest": "skills/shared/systematic-debugging",
+      "installed_at": "2026-03-21T17:10:55.438820",
+      "name": "systematic-debugging",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/systematic-debugging",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/test-driven-development": {
+      "bucket": "shared",
+      "dest": "skills/shared/test-driven-development",
+      "installed_at": "2026-03-21T17:10:55.445756",
+      "name": "test-driven-development",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/test-driven-development",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/using-git-worktrees": {
+      "bucket": "shared",
+      "dest": "skills/shared/using-git-worktrees",
+      "installed_at": "2026-03-21T17:10:55.453263",
+      "name": "using-git-worktrees",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/using-git-worktrees",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/using-superpowers": {
+      "bucket": "shared",
+      "dest": "skills/shared/using-superpowers",
+      "installed_at": "2026-03-21T17:10:55.460337",
+      "name": "using-superpowers",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/using-superpowers",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/verification-before-completion": {
+      "bucket": "shared",
+      "dest": "skills/shared/verification-before-completion",
+      "installed_at": "2026-03-21T17:10:55.469311",
+      "name": "verification-before-completion",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/verification-before-completion",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/writing-plans": {
+      "bucket": "shared",
+      "dest": "skills/shared/writing-plans",
+      "installed_at": "2026-03-21T17:10:55.477956",
+      "name": "writing-plans",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/writing-plans",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    },
+    "shared/writing-skills": {
+      "bucket": "shared",
+      "dest": "skills/shared/writing-skills",
+      "installed_at": "2026-03-21T17:10:55.488192",
+      "name": "writing-skills",
+      "resolved_revision": "8ea39819eed74fe2a0338e71789f06b30e953041",
+      "scope": "repo",
+      "source": {
+        "path": "skills/writing-skills",
+        "ref": "main",
+        "repo": "https://github.com/obra/superpowers.git",
+        "source_name": "superpowers"
+      },
+      "source_type": "tracked_repo",
+      "updated_at": "2026-03-24T17:07:52.261291"
+    }
+  },
+  "version": 1
+}
