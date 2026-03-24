@@ -12,6 +12,7 @@ from pathlib import Path
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "sync_skills.py"
 AGENT_MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "sync_agents.py"
+SOURCE_IMPRINTS_MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "source_imprints.py"
 SPEC = importlib.util.spec_from_file_location("sync_skills", MODULE_PATH)
 sync_skills = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -63,6 +64,10 @@ def make_cli_repo(root: Path, target_path: Path) -> Path:
     (repo_root / "scripts" / "sync_skills.py").write_text(MODULE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
     (repo_root / "scripts" / "sync_agents.py").write_text(
         AGENT_MODULE_PATH.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (repo_root / "scripts" / "source_imprints.py").write_text(
+        SOURCE_IMPRINTS_MODULE_PATH.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     config = sample_config(target_path)
@@ -168,6 +173,115 @@ class HelperTests(unittest.TestCase):
 
         self.assertIn("--update-sources", command)
         self.assertIn("--migrate-manifests", command)
+
+
+class TrackedSourceRefreshTests(unittest.TestCase):
+    def _make_runner(self, commit: str = "abc123"):
+        def runner(cmd, **kwargs):
+            if "rev-parse" in cmd:
+                from unittest.mock import MagicMock
+                result = MagicMock()
+                result.stdout = commit + "\n"
+                return result
+            from unittest.mock import MagicMock
+            return MagicMock()
+
+        return runner
+
+    def test_refresh_tracked_source_catalog_materializes_repo_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = root / "repo"
+            (repo_root / "config").mkdir(parents=True)
+            (repo_root / "skills" / "shared").mkdir(parents=True)
+
+            cache_root = repo_root / ".tracked-repos-cache" / "myrepo"
+            cache_root.mkdir(parents=True)
+            (cache_root / ".git").mkdir()
+            (cache_root / "SKILL.md").write_text("# root", encoding="utf-8")
+            (cache_root / "sub").mkdir()
+            (cache_root / "sub" / "SKILL.md").write_text("# sub", encoding="utf-8")
+
+            result = sync_skills.refresh_tracked_source_catalog(
+                actual_repo_root=repo_root,
+                catalog_repo_root=repo_root,
+                source_name="myrepo",
+                source_cfg={
+                    "repo": "https://example.com/repo.git",
+                    "ref": "main",
+                    "skill_map": {
+                        "myrepo": {"source_path": "."},
+                        "myrepo-sub": {"source_path": "sub"},
+                    },
+                },
+                runner=self._make_runner(),
+                dry_run=False,
+            )
+
+            self.assertEqual(result["skills_found"], 2)
+            self.assertTrue((repo_root / "sources" / "tracked__myrepo" / "imprint" / "SKILL.md").is_file())
+            self.assertTrue((repo_root / "skills" / "shared" / "myrepo" / "SKILL.md").is_file())
+            self.assertTrue((repo_root / "skills" / "shared" / "myrepo-sub" / "SKILL.md").is_file())
+            registry = sync_skills.load_json(repo_root / "config" / "tracked-skill-sources.local.json")
+            self.assertIn("shared/myrepo", registry["skills"])
+            self.assertIn("shared/myrepo-sub", registry["skills"])
+
+    def test_refresh_tracked_source_catalog_removes_stale_generated_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = root / "repo"
+            (repo_root / "config").mkdir(parents=True)
+            (repo_root / "skills" / "shared").mkdir(parents=True)
+
+            stale = make_skill(repo_root / "skills" / "shared", "myrepo-old", "# old\n")
+            self.assertTrue(stale.exists())
+            sync_skills.write_json(
+                repo_root / "config" / "tracked-skill-sources.local.json",
+                {
+                    "version": 1,
+                    "skills": {
+                        "shared/myrepo-old": {
+                            "name": "myrepo-old",
+                            "bucket": "shared",
+                            "dest": "skills/shared/myrepo-old",
+                            "scope": "repo",
+                            "source_type": "tracked_repo",
+                            "source": {
+                                "repo": "https://example.com/repo.git",
+                                "ref": "main",
+                                "path": "old",
+                                "source_name": "myrepo",
+                            },
+                            "resolved_revision": "old",
+                            "installed_at": "2026-03-24T00:00:00",
+                            "updated_at": "2026-03-24T00:00:00",
+                        }
+                    },
+                },
+            )
+
+            cache_root = repo_root / ".tracked-repos-cache" / "myrepo"
+            cache_root.mkdir(parents=True)
+            (cache_root / ".git").mkdir()
+            (cache_root / "SKILL.md").write_text("# root", encoding="utf-8")
+
+            result = sync_skills.refresh_tracked_source_catalog(
+                actual_repo_root=repo_root,
+                catalog_repo_root=repo_root,
+                source_name="myrepo",
+                source_cfg={
+                    "repo": "https://example.com/repo.git",
+                    "ref": "main",
+                    "skill_map": {
+                        "myrepo": {"source_path": "."},
+                    },
+                },
+                runner=self._make_runner(),
+                dry_run=False,
+            )
+
+            self.assertEqual([item["key"] for item in result["stale_outputs"]], ["shared/myrepo-old"])
+            self.assertFalse((repo_root / "skills" / "shared" / "myrepo-old").exists())
 
 
 class PullPlanTests(unittest.TestCase):

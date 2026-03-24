@@ -20,6 +20,12 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import source_imprints
+
 
 VALID_BUCKETS = {"shared", "codex", "claude"}
 VALID_SCOPES = {"repo", "local"}
@@ -119,6 +125,10 @@ def backend_command_prefix(backend: str) -> list[str]:
 
 def registry_key(bucket: str, name: str) -> str:
     return f"{bucket}/{name}"
+
+
+def source_id_for_record(scope: str, bucket: str, name: str, source_type: str) -> str:
+    return f"{source_type}__{scope}__{bucket}__{name}"
 
 
 def validate_bucket(bucket: str) -> None:
@@ -329,11 +339,19 @@ def normalize_plugin_path(path: Path) -> Path:
 def list_records(repo_root: Path) -> list[dict]:
     records: list[dict] = []
     deploy_state = load_deploy_state(deploy_state_path(repo_root))
-    for scope in ("repo", "local"):
-        registry = load_registry(registry_path(repo_root, scope))
+    registry_specs = [
+        ("repo", registry_path(repo_root, "repo")),
+        ("local", registry_path(repo_root, "local")),
+        ("tracked", repo_root / "config" / "tracked-skill-sources.local.json"),
+    ]
+    for scope, path in registry_specs:
+        if not path.is_file():
+            continue
+        registry = load_registry(path)
         for key, record in registry["skills"].items():
             item = dict(record)
             item["key"] = key
+            item["scope"] = record.get("scope", scope)
             deployments: dict[str, dict] = {}
             for target_id, target in deploy_state.get("targets", {}).items():
                 skill_state = target.get("skills", {}).get(key)
@@ -391,7 +409,34 @@ def record_install(
     if dest.exists():
         raise SourceError(f"Destination already exists in repo: {dest}")
 
-    copy_skill(source_dir, dest)
+    source_id = source_id_for_record(scope, bucket, name, source_type)
+    imprint = source_imprints.refresh_imprint_tree(
+        repo_root=repo_root,
+        source_id=source_id,
+        source_tree=source_dir,
+    )
+    overlays = source_imprints.overlays_root(repo_root, source_id)
+    source_imprints.materialize_skill(
+        imprint_tree=imprint,
+        overlay_tree=overlays,
+        dest=dest,
+    )
+    source_imprints.save_source_metadata(
+        repo_root,
+        source_id,
+        {
+            "version": 1,
+            "source_id": source_id,
+            "name": name,
+            "bucket": bucket,
+            "scope": scope,
+            "source_type": source_type,
+            "source": source_payload,
+            "resolved_revision": resolved_revision,
+            "materialized_dest": dest.relative_to(repo_root).as_posix(),
+            "updated_at": timestamp(),
+        },
+    )
 
     registry_file = registry_path(repo_root, scope)
     registry = load_registry(registry_file)
@@ -403,6 +448,9 @@ def record_install(
         "source_type": source_type,
         "source": source_payload,
         "resolved_revision": resolved_revision,
+        "source_id": source_id,
+        "imprint": imprint.relative_to(repo_root).as_posix(),
+        "overlay": overlays.relative_to(repo_root).as_posix(),
         "installed_at": timestamp(),
         "updated_at": timestamp(),
     }
@@ -479,12 +527,42 @@ def update_tracked_skill(
     else:
         raise SourceError(f"Unsupported source type: {record['source_type']}")
 
-    copy_skill(source_dir, dest)
+    source_id = record.get("source_id") or source_id_for_record(scope, record["bucket"], record["name"], record["source_type"])
+    imprint = source_imprints.refresh_imprint_tree(
+        repo_root=repo_root,
+        source_id=source_id,
+        source_tree=source_dir,
+    )
+    overlays = source_imprints.overlays_root(repo_root, source_id)
+    source_imprints.materialize_skill(
+        imprint_tree=imprint,
+        overlay_tree=overlays,
+        dest=dest,
+    )
+    source_imprints.save_source_metadata(
+        repo_root,
+        source_id,
+        {
+            "version": 1,
+            "source_id": source_id,
+            "name": record["name"],
+            "bucket": record["bucket"],
+            "scope": scope,
+            "source_type": record["source_type"],
+            "source": record["source"],
+            "resolved_revision": resolved_revision,
+            "materialized_dest": dest.relative_to(repo_root).as_posix(),
+            "updated_at": timestamp(),
+        },
+    )
 
     registry_file = registry_path(repo_root, scope)
     registry = load_registry(registry_file)
     stored = registry["skills"][key]
     stored["resolved_revision"] = resolved_revision
+    stored["source_id"] = source_id
+    stored["imprint"] = imprint.relative_to(repo_root).as_posix()
+    stored["overlay"] = overlays.relative_to(repo_root).as_posix()
     stored["updated_at"] = timestamp()
     save_registry(registry_file, registry)
     return {"key": key, "dest": str(dest), "resolved_revision": resolved_revision}

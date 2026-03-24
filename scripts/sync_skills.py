@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 import uuid
 
@@ -18,10 +19,16 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import sync_agents
+import source_imprints
 
 
-SOURCE_REGISTRY_FILENAMES = ("skill-sources.json", "skill-sources.local.json")
+SOURCE_REGISTRY_FILENAMES = (
+    "skill-sources.json",
+    "skill-sources.local.json",
+    "tracked-skill-sources.local.json",
+)
 DEPLOY_STATE_FILENAME = "deploy-state.local.json"
+TRACKED_SOURCE_STATE_FILENAME = "tracked-repos-state.local.json"
 MANAGED_AGENTS_BEGIN = sync_agents.MANAGED_AGENTS_BEGIN
 MANAGED_AGENTS_END = sync_agents.MANAGED_AGENTS_END
 
@@ -112,6 +119,55 @@ def load_source_index(repo_root: Path) -> dict[str, dict]:
             if key not in records:
                 records[key] = record
     return records
+
+
+def tracked_source_state_path(repo_root: Path) -> Path:
+    return repo_root / "config" / TRACKED_SOURCE_STATE_FILENAME
+
+
+def load_tracked_source_state(path: Path) -> dict:
+    if not path.is_file():
+        return {"version": 1, "sources": {}}
+    payload = load_json(path)
+    if "sources" not in payload or not isinstance(payload["sources"], dict):
+        return {"version": 1, "sources": {}}
+    return payload
+
+
+def save_tracked_source_state(path: Path, payload: dict) -> None:
+    write_json(path, payload)
+
+
+def tracked_source_registry_path(repo_root: Path) -> Path:
+    return repo_root / "config" / "tracked-skill-sources.local.json"
+
+
+def load_tracked_source_registry(path: Path) -> dict:
+    if not path.is_file():
+        return {"version": 1, "skills": {}}
+    payload = load_json(path)
+    if "skills" not in payload or not isinstance(payload["skills"], dict):
+        return {"version": 1, "skills": {}}
+    return payload
+
+
+def save_tracked_source_registry(path: Path, payload: dict) -> None:
+    write_json(path, payload)
+
+
+def prepare_catalog_workspace(repo_root: Path) -> Path:
+    temp_root = Path(tempfile.mkdtemp(prefix="agent-skill-sync-catalog-"))
+    for name in ("config", "skills", ".codex", ".claude", "sources"):
+        source = repo_root / name
+        dest = temp_root / name
+        if not source.exists():
+            continue
+        if source.is_dir():
+            shutil.copytree(source, dest)
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, dest)
+    return temp_root
 
 
 def deploy_state_path(repo_root: Path) -> Path:
@@ -504,6 +560,178 @@ def apply_tracked_ownership(
         write_json(manifest_path, manifest)
 
     return {"removed": removed, "changed": changed}
+
+
+def tracked_source_id(source_name: str) -> str:
+    return f"tracked__{source_name}"
+
+
+def tracked_skill_bucket(source_cfg: dict, entry: dict) -> str:
+    return entry.get("bucket", source_cfg.get("bucket", "shared"))
+
+
+def refresh_tracked_source_catalog(
+    *,
+    actual_repo_root: Path,
+    catalog_repo_root: Path,
+    source_name: str,
+    source_cfg: dict,
+    runner=subprocess.run,
+    dry_run: bool,
+) -> dict:
+    import sync_tracked_repos
+
+    repo_url = source_cfg["repo"]
+    ref = source_cfg.get("ref", "main")
+    skill_map = source_cfg.get("skill_map", {})
+    cache_root = actual_repo_root / ".tracked-repos-cache"
+    cache_dir = sync_tracked_repos.cache_dir_for_source(source_name, cache_root)
+    source_id = tracked_source_id(source_name)
+
+    temp_repo = None
+    if dry_run and cache_dir.exists():
+        action = "cached"
+        commit = sync_tracked_repos.current_commit(cache_dir, runner=runner)
+        repo_view = cache_dir
+    elif dry_run:
+        temp_repo = tempfile.TemporaryDirectory(prefix="agent-skill-sync-tracked-")
+        repo_view = Path(temp_repo.name) / source_name
+        action, commit = sync_tracked_repos.clone_or_pull(repo_url, ref, repo_view, runner=runner)
+    else:
+        action, commit = sync_tracked_repos.clone_or_pull(repo_url, ref, cache_dir, runner=runner)
+        repo_view = cache_dir
+
+    source_imprints.ensure_source_layout(catalog_repo_root, source_id)
+    imprint_root = source_imprints.refresh_imprint_tree(
+        repo_root=catalog_repo_root,
+        source_id=source_id,
+        source_tree=repo_view,
+        ignore_names={".git"},
+    )
+    overlays_root = source_imprints.overlays_root(catalog_repo_root, source_id)
+
+    state_path = tracked_source_state_path(actual_repo_root)
+    state = load_tracked_source_state(state_path)
+    registry_path = tracked_source_registry_path(catalog_repo_root)
+    registry = load_tracked_source_registry(registry_path)
+    previous_records = {
+        key: value
+        for key, value in registry["skills"].items()
+        if value.get("source_type") == "tracked_repo" and value.get("source", {}).get("source_name") == source_name
+    }
+
+    now = datetime.now().isoformat()
+    current_records: dict[str, dict] = {}
+    materialized: dict[str, dict] = {}
+
+    for skill_name, entry in skill_map.items():
+        source_path = entry.get("source_path", ".")
+        skill_root = imprint_root if source_path == "." else imprint_root / source_path
+        if not (skill_root / "SKILL.md").is_file():
+            continue
+
+        overlay_root = overlays_root if source_path == "." else overlays_root / source_path
+        bucket = tracked_skill_bucket(source_cfg, entry)
+        dest = catalog_repo_root / "skills" / bucket / skill_name
+        status = source_imprints.materialization_status(
+            imprint_tree=skill_root,
+            overlay_tree=overlay_root if overlay_root.exists() else None,
+            dest=dest,
+        )
+        if not dry_run and status != "unchanged":
+            source_imprints.materialize_skill(
+                imprint_tree=skill_root,
+                overlay_tree=overlay_root if overlay_root.exists() else None,
+                dest=dest,
+            )
+
+        key = f"{bucket}/{skill_name}"
+        previous = previous_records.get(key, {})
+        current_records[key] = {
+            "name": skill_name,
+            "bucket": bucket,
+            "dest": dest.relative_to(catalog_repo_root).as_posix(),
+            "scope": "repo",
+            "source_type": "tracked_repo",
+            "source": {
+                "repo": repo_url,
+                "ref": ref,
+                "path": source_path,
+                "source_name": source_name,
+            },
+            "resolved_revision": commit,
+            "installed_at": previous.get("installed_at", now),
+            "updated_at": now,
+        }
+        materialized[skill_name] = {
+            "bucket": bucket,
+            "status": status,
+            "dest": str(dest),
+            "source_path": source_path,
+        }
+
+    stale_keys = sorted(set(previous_records) - set(current_records))
+    stale_outputs: list[dict] = []
+    for key in stale_keys:
+        record = previous_records[key]
+        dest = catalog_repo_root / record["dest"]
+        stale_outputs.append({"key": key, "dest": str(dest)})
+        if not dry_run and dest.exists():
+            if dest.is_symlink() or dest.is_file():
+                dest.unlink()
+            else:
+                shutil.rmtree(dest)
+
+    if not dry_run:
+        registry["skills"] = {
+            key: value
+            for key, value in registry["skills"].items()
+            if key not in previous_records
+        }
+        registry["skills"].update(current_records)
+        save_tracked_source_registry(registry_path, registry)
+        save_tracked_source_state(
+            state_path,
+            {
+                **state,
+                "version": 1,
+                "sources": {
+                    **state.get("sources", {}),
+                    source_name: {
+                        "repo": repo_url,
+                        "ref": ref,
+                        "commit": commit,
+                        "updated_at": now,
+                        "skills": sorted(current_records),
+                    },
+                },
+            },
+        )
+        source_imprints.save_source_metadata(
+            catalog_repo_root,
+            source_id,
+            {
+                "version": 1,
+                "source_id": source_id,
+                "source_type": "tracked_repo",
+                "source": {"repo": repo_url, "ref": ref},
+                "resolved_revision": commit,
+                "updated_at": now,
+                "skills": sorted(current_records),
+            },
+        )
+
+    if temp_repo is not None:
+        temp_repo.cleanup()
+
+    return {
+        "source": source_name,
+        "action": action,
+        "commit": commit,
+        "skills_found": len(current_records),
+        "skills": materialized,
+        "stale_outputs": stale_outputs,
+    }
 
 
 def plan_push_target(
@@ -906,6 +1134,7 @@ def print_rollback_plan(plan: dict) -> None:
 def refresh_deploy_state(
     *,
     repo_root: Path,
+    catalog_root: Path | None = None,
     config: dict,
     target_ids: list[str],
     host: str,
@@ -917,7 +1146,8 @@ def refresh_deploy_state(
     state = load_deploy_state(state_file)
     state["version"] = 1
     state["updated_at"] = datetime.now().isoformat()
-    source_index = load_source_index(repo_root)
+    catalog_repo_root = catalog_root or repo_root
+    source_index = load_source_index(catalog_repo_root)
     target_filter = set(target_ids)
 
     for target_id, target_cfg in config.get("targets", {}).items():
@@ -933,7 +1163,7 @@ def refresh_deploy_state(
         target_root = target_root_for_runtime(target_cfg, runtime_host or host)
         manifest_name = config.get("manifest_filename", ".skill-sync-manifest.json")
         manifest = load_manifest(target_root / manifest_name)
-        source_entries = collect_source_skill_entries(repo_root, config["catalog"], target_cfg["kind"])
+        source_entries = collect_source_skill_entries(catalog_repo_root, config["catalog"], target_cfg["kind"])
         previous_target_state = state["targets"].get(target_id, {})
         previous_skill_states = previous_target_state.get("skills", {})
         target_state = {
@@ -1060,6 +1290,7 @@ def main() -> int:
         return 0
 
     target_filter = set(args.target)
+    catalog_repo_root = repo_root
 
     if args.migrate_manifests:
         manifest_name = config.get("manifest_filename", ".skill-sync-manifest.json")
@@ -1091,72 +1322,34 @@ def main() -> int:
     if args.update_sources:
         tracked_repos = config.get("tracked_repos", {})
         if tracked_repos:
-            import sync_tracked_repos
-
-            cache_root = repo_root / ".tracked-repos-cache"
-            state_path = repo_root / "config" / sync_tracked_repos.TRACKED_REPOS_STATE_FILENAME
-            state = sync_tracked_repos.load_state(state_path)
-            manifest_name = config.get("manifest_filename", ".skill-sync-manifest.json")
-            selected_target_ids = {
-                target_id
-                for target_id, target_cfg in targets.items()
-                if target_cfg.get("enabled", False)
-                and target_matches_host(target_cfg, host)
-                and (not target_filter or target_id in target_filter)
-            }
+            if not args.apply:
+                catalog_repo_root = prepare_catalog_workspace(repo_root)
 
             for source_name, source_cfg in tracked_repos.items():
-                result = sync_tracked_repos.update_tracked_repo(
-                    source_name,
-                    source_cfg,
-                    targets,
-                    cache_root,
-                    resolve_target_path=lambda cfg: target_root_for_runtime(cfg, runtime_host),
-                    state=state,
-                    target_ids=selected_target_ids,
+                result = refresh_tracked_source_catalog(
+                    actual_repo_root=repo_root,
+                    catalog_repo_root=catalog_repo_root,
+                    source_name=source_name,
+                    source_cfg=source_cfg,
                     dry_run=not args.apply,
                 )
                 print(f"\n[tracked:{source_name}] {result['action']} -> {result['commit'][:8]}")
                 print(f"  skills found: {result['skills_found']}")
-                for tid, tres in result["targets"].items():
-                    if tres["status"] in {"ok", "planned"}:
-                        if tres["mode"] == "clone":
-                            print(f"  [{tid}] clone {tres['action']} -> {tres['commit'][:8]}, symlinks: {tres.get('symlinks_created', 0)} created")
-                        else:
-                            print(f"  [{tid}] flat_copy updated={tres['updated']} skipped={tres['skipped']}")
-                    elif tres["status"] == "up_to_date":
-                        print(f"  [{tid}] up to date ({tres['commit'][:8]})")
-                    elif tres["status"] == "skipped":
-                        print(f"  [{tid}] skipped ({tres['reason']})")
-                    else:
-                        print(f"  [{tid}] ERROR: {tres.get('error', 'unknown')}")
-
-                skill_names = result.get("skill_names", [])
-                for tid, tres in result["targets"].items():
-                    if tres.get("status") not in ("ok", "planned", "up_to_date"):
-                        continue
-                    tcfg = targets.get(tid)
-                    if not tcfg:
-                        continue
-                    try:
-                        target_path = target_root_for_runtime(tcfg, runtime_host)
-                    except SourceError:
-                        continue
-                    ownership_result = apply_tracked_ownership(
-                        target_id=tid,
-                        target_kind=tcfg["kind"],
-                        manifest_path=target_path / manifest_name,
-                        target_root=target_path,
-                        source_name=source_name,
-                        skill_names=skill_names,
-                        apply=args.apply,
-                    )
-                    if ownership_result["removed"]:
-                        action = "removed" if args.apply else "would remove"
-                        print(f"  [{tid}] {action} stale tracked skills: {', '.join(ownership_result['removed'])}")
-
-            if args.apply:
-                sync_tracked_repos.save_state(state_path, state)
+                added = sorted(name for name, item in result["skills"].items() if item["status"] == "add")
+                updated = sorted(name for name, item in result["skills"].items() if item["status"] == "update")
+                unchanged = sorted(name for name, item in result["skills"].items() if item["status"] == "unchanged")
+                print(f"  add: {len(added)}")
+                for name in added:
+                    print(f"    + {name}")
+                print(f"  update: {len(updated)}")
+                for name in updated:
+                    print(f"    ~ {name}")
+                print(f"  unchanged: {len(unchanged)}")
+                if result["stale_outputs"]:
+                    action = "remove" if not args.apply else "removed"
+                    print(f"  stale outputs {action}: {len(result['stale_outputs'])}")
+                    for item in result["stale_outputs"]:
+                        print(f"    - {item['key']}")
             print()
     selected = []
     for target_id, target_cfg in targets.items():
@@ -1183,7 +1376,7 @@ def main() -> int:
             )
         else:
             plan = plan_push_target(
-                repo_root,
+                catalog_repo_root,
                 config,
                 target_id,
                 target_cfg,
@@ -1201,6 +1394,8 @@ def main() -> int:
         return 0
 
     print(f"Repo root: {repo_root}")
+    if catalog_repo_root != repo_root:
+        print(f"Catalog preview root: {catalog_repo_root}")
     print(f"Host: {host}")
     if args.rollback:
         mode_name = "rollback"
@@ -1234,6 +1429,7 @@ def main() -> int:
                 apply_rollback_target(plan)
             refresh_deploy_state(
                 repo_root=repo_root,
+                catalog_root=catalog_repo_root,
                 config=config,
                 target_ids=[plan["id"] for plan in selected],
                 host=host,
@@ -1282,6 +1478,7 @@ def main() -> int:
                         print(f"Config backup for {backup_run['target']}: {backup_run['codex_config_backup']}")
             refresh_deploy_state(
                 repo_root=repo_root,
+                catalog_root=catalog_repo_root,
                 config=config,
                 target_ids=[plan["id"] for plan in selected],
                 host=host,

@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "manage_skill_sources.py"
+SOURCE_IMPRINTS_MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "source_imprints.py"
 SPEC = importlib.util.spec_from_file_location("manage_skill_sources", MODULE_PATH)
 manage_skill_sources = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -40,6 +41,10 @@ def prepare_cli_repo(root: Path) -> Path:
     (repo_root / "scripts").mkdir(parents=True, exist_ok=True)
     (repo_root / "scripts" / "manage_skill_sources.py").write_text(
         MODULE_PATH.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (repo_root / "scripts" / "source_imprints.py").write_text(
+        SOURCE_IMPRINTS_MODULE_PATH.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     return repo_root
@@ -85,6 +90,8 @@ class PluginInstallTests(unittest.TestCase):
             self.assertEqual(record["source"]["path"], str(skill))
             self.assertEqual(record["dest"], "skills/codex/demo-plugin")
             self.assertTrue(record["resolved_revision"])
+            self.assertTrue((repo_root / record["imprint"] / "SKILL.md").is_file())
+            self.assertTrue((repo_root / record["overlay"]).is_dir())
 
     def test_update_tracked_plugin_skill_refreshes_repo_copy_and_revision(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
@@ -147,6 +154,8 @@ class GithubInstallTests(unittest.TestCase):
             self.assertEqual(record["source"]["path"], "skills/shared/gh-skill")
             self.assertEqual(record["source"]["ref"], "main")
             self.assertEqual(record["resolved_revision"], "abc123")
+            self.assertTrue((repo_root / record["imprint"] / "SKILL.md").is_file())
+            self.assertTrue((repo_root / record["overlay"]).is_dir())
 
     def test_update_tracked_github_skill_uses_loader_and_updates_record(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
@@ -189,6 +198,7 @@ class GithubInstallTests(unittest.TestCase):
             )
             record = registry["skills"]["shared/gh-skill"]
             self.assertEqual(record["resolved_revision"], "def456")
+            self.assertEqual((repo_root / record["imprint"] / "README.txt").read_text(encoding="utf-8"), "v2")
 
     def test_git_sparse_checkout_warns_when_https_clone_falls_back_to_ssh(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
@@ -1150,6 +1160,41 @@ class RegistryTests(unittest.TestCase):
 
             self.assertIn("deployments", record)
             self.assertEqual(record["deployments"]["windows_codex"]["status"], "up_to_date")
+
+    def test_list_records_includes_tracked_source_registry_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            manage_skill_sources.save_registry(
+                repo_root / "config" / "tracked-skill-sources.local.json",
+                {
+                    "version": 1,
+                    "skills": {
+                        "shared/gstack-browse": {
+                            "name": "gstack-browse",
+                            "bucket": "shared",
+                            "dest": "skills/shared/gstack-browse",
+                            "scope": "repo",
+                            "source_type": "tracked_repo",
+                            "source": {
+                                "repo": "owner/repo",
+                                "ref": "main",
+                                "path": "browse",
+                                "source_name": "gstack",
+                            },
+                            "resolved_revision": "abc123",
+                            "installed_at": "2026-03-24T00:00:00",
+                            "updated_at": "2026-03-24T00:00:00",
+                        }
+                    },
+                },
+            )
+
+            records = manage_skill_sources.list_records(repo_root)
+            record = next(item for item in records if item["key"] == "shared/gstack-browse")
+
+            self.assertEqual(record["source_type"], "tracked_repo")
+            self.assertEqual(record["source"]["source_name"], "gstack")
 
 
 class CLITests(unittest.TestCase):
