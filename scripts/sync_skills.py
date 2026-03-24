@@ -77,6 +77,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--quiet", action="store_true", help="Reduce output.")
     parser.add_argument("--ticket-id", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--migrate-manifests",
+        action="store_true",
+        help="Migrate all target manifests from v1 to v2 format in-place.",
+    )
+    parser.add_argument(
+        "--update-sources",
+        action="store_true",
+        help="Pull tracked repos and distribute to targets before syncing.",
+    )
     return parser.parse_args()
 
 
@@ -259,10 +269,18 @@ def target_root_for_runtime(target_cfg: dict, runtime_host: str) -> Path:
             f"WSL target '{path}' must be synced from WSL or delegated via wsl.exe, not from Windows filesystem paths."
         )
     if target_host == "windows" and runtime_host in {"wsl", "linux"}:
-        raise SourceError(
-            f"Windows target '{path}' must be synced from Windows, not from a {runtime_host} runtime."
-        )
+        return _windows_path_to_wsl(path)
     return Path(path)
+
+
+def _windows_path_to_wsl(path: str) -> Path:
+    """Convert a Windows path like C:/Users/... to /mnt/c/Users/..."""
+    path = path.replace("\\", "/")
+    if len(path) >= 3 and path[1] == ":":
+        drive = path[0].lower()
+        tail = path[2:]
+        return Path(f"/mnt/{drive}{tail}")
+    raise SourceError(f"Cannot translate Windows path '{path}' to WSL mount — expected drive letter prefix (e.g. C:/)")
 
 
 def to_wsl_path(path: Path) -> str:
@@ -284,6 +302,10 @@ def target_ids_for_host(config: dict, target_filter: set[str], host_name: str) -
         if target_cfg.get("host") == host_name:
             target_ids.append(target_id)
     return target_ids
+
+
+def target_matches_host(target_cfg: dict, host_name: str) -> bool:
+    return host_name == "all" or target_cfg.get("host") == host_name
 
 
 def delegated_sync_args(
@@ -313,6 +335,10 @@ def delegated_sync_args(
         command.append("--quiet")
     if args.ticket_id:
         command.extend(["--ticket-id", args.ticket_id])
+    if getattr(args, "update_sources", False):
+        command.append("--update-sources")
+    if getattr(args, "migrate_manifests", False):
+        command.append("--migrate-manifests")
     return command
 
 
@@ -370,6 +396,116 @@ def maybe_delegate_wsl_targets(
     return requested_host, None
 
 
+def _owned_skills_from_manifest(manifest: dict, desired_skills: list[str]) -> set[str]:
+    """Extract skill names owned by the sync tool.
+
+    v2 manifests: skills with owner='sync'.
+    v1 manifests: auto-migrate by treating skills matching the current
+    source catalog as owned, all others as unowned.
+    """
+    managed = manifest.get("skills", {})
+    if isinstance(managed, dict):
+        return {name for name, meta in managed.items()
+                if isinstance(meta, dict) and meta.get("owner") == "sync"}
+    elif isinstance(managed, list):
+        return set(managed) & set(desired_skills)
+    return set()
+
+
+def build_manifest_v2(
+    target_id: str,
+    kind: str,
+    desired_skills: list[str],
+    existing_manifest: dict,
+) -> dict:
+    """Build a v2 manifest that preserves unowned entries."""
+    skills: dict[str, dict] = {}
+    existing_skills = existing_manifest.get("skills", {})
+
+    if isinstance(existing_skills, list):
+        for name in existing_skills:
+            if name not in desired_skills:
+                skills[name] = {}
+    elif isinstance(existing_skills, dict):
+        for name, meta in existing_skills.items():
+            if isinstance(meta, dict) and meta.get("owner") != "sync":
+                skills[name] = meta
+
+    for name in desired_skills:
+        skills[name] = {"owner": "sync"}
+
+    return {
+        "version": 2,
+        "target": target_id,
+        "kind": kind,
+        "skills": skills,
+        "agents": existing_manifest.get("agents", []),
+    }
+
+
+def tracked_owner_tag(source_name: str) -> str:
+    return f"tracked:{source_name}"
+
+
+def remove_skill_path(path: Path) -> bool:
+    if path.is_symlink():
+        path.unlink()
+        return True
+    if path.is_dir():
+        shutil.rmtree(path)
+        return True
+    if path.exists():
+        path.unlink()
+        return True
+    return False
+
+
+def apply_tracked_ownership(
+    *,
+    target_id: str,
+    target_kind: str,
+    manifest_path: Path,
+    target_root: Path,
+    source_name: str,
+    skill_names: list[str],
+    apply: bool,
+) -> dict:
+    """Keep tracked repo ownership in sync and prune stale tracked skills."""
+    existing_manifest = load_manifest(manifest_path) if manifest_path.exists() else {}
+    manifest = build_manifest_v2(target_id, target_kind, [], existing_manifest)
+    raw_skills = manifest.get("skills", {})
+    if not isinstance(raw_skills, dict):
+        raw_skills = {}
+
+    owner_tag = tracked_owner_tag(source_name)
+    desired_names = set(skill_names)
+    previously_owned = {
+        name
+        for name, meta in raw_skills.items()
+        if isinstance(meta, dict) and meta.get("owner") == owner_tag
+    }
+    removed = sorted(previously_owned - desired_names)
+    changed = bool(removed) or not manifest_path.exists()
+
+    if apply:
+        for name in removed:
+            remove_skill_path(target_root / name)
+            raw_skills.pop(name, None)
+
+    for name in skill_names:
+        current = raw_skills.get(name, {})
+        if not isinstance(current, dict) or current.get("owner") != owner_tag:
+            changed = True
+            if apply:
+                raw_skills[name] = {"owner": owner_tag}
+
+    if apply and changed:
+        manifest["skills"] = raw_skills
+        write_json(manifest_path, manifest)
+
+    return {"removed": removed, "changed": changed}
+
+
 def plan_push_target(
     repo_root: Path,
     config: dict,
@@ -392,7 +528,6 @@ def plan_push_target(
 
     source_skills = collect_source_skills(repo_root, config["catalog"], target_cfg["kind"])
     desired_names = sorted(source_skills)
-    managed_names = sorted(manifest.get("skills", []))
 
     to_add: list[str] = []
     to_update: list[str] = []
@@ -407,7 +542,8 @@ def plan_push_target(
         else:
             unchanged.append(name)
 
-    to_remove = sorted(name for name in managed_names if name not in desired_names)
+    owned_skills = _owned_skills_from_manifest(manifest, desired_names)
+    to_remove = sorted(owned_skills - set(desired_names))
     agent_plan = sync_agents.plan_agent_sync(
         repo_root=repo_root,
         kind=target_cfg["kind"],
@@ -588,16 +724,10 @@ def apply_target(plan: dict, clean: bool, backup: bool = True, ticket: str | Non
         ticket_dir=ticket_dir,
     )
 
-    write_json(
-        manifest_path,
-        {
-            "version": 1,
-            "target": plan["id"],
-            "kind": plan["kind"],
-            "skills": plan["desired"],
-            "agents": plan.get("desired_agents", []),
-        },
-    )
+    existing_manifest = load_manifest(manifest_path) if manifest_path.exists() else {}
+    new_manifest = build_manifest_v2(plan["id"], plan["kind"], plan["desired"], existing_manifest)
+    new_manifest["agents"] = plan.get("desired_agents", [])
+    write_json(manifest_path, new_manifest)
 
     if ticket_dir is not None:
         ensure_dir(ticket_dir)
@@ -819,7 +949,14 @@ def refresh_deploy_state(
             "skills": {},
         }
 
-        managed_names = set(manifest.get("skills", []))
+        raw_skills = manifest.get("skills", {})
+        if isinstance(raw_skills, list):
+            managed_names = set(raw_skills)
+        elif isinstance(raw_skills, dict):
+            managed_names = {name for name, meta in raw_skills.items()
+                            if isinstance(meta, dict) and meta.get("owner") == "sync"}
+        else:
+            managed_names = set()
         for name, entry in source_entries.items():
             source_path = entry["path"]
             target_path = target_root / name
@@ -923,6 +1060,104 @@ def main() -> int:
         return 0
 
     target_filter = set(args.target)
+
+    if args.migrate_manifests:
+        manifest_name = config.get("manifest_filename", ".skill-sync-manifest.json")
+        for target_id, target_cfg in targets.items():
+            if not target_cfg.get("enabled", False):
+                continue
+            try:
+                target_path = target_root_for_runtime(target_cfg, runtime_host)
+            except SourceError:
+                continue
+            manifest_path = target_path / manifest_name
+            if not manifest_path.exists():
+                print(f"[{target_id}] no manifest found, skipping")
+                continue
+            manifest = load_manifest(manifest_path)
+            if manifest.get("version", 1) >= 2:
+                print(f"[{target_id}] already v2, skipping")
+                continue
+            source_skills = collect_source_skills(repo_root, config["catalog"], target_cfg["kind"])
+            desired_names = sorted(source_skills.keys())
+            new_manifest = build_manifest_v2(target_id, target_cfg["kind"], desired_names, manifest)
+            new_manifest["agents"] = manifest.get("agents", [])
+            write_json(manifest_path, new_manifest)
+            owned = sum(1 for m in new_manifest["skills"].values() if isinstance(m, dict) and m.get("owner") == "sync")
+            unowned = len(new_manifest["skills"]) - owned
+            print(f"[{target_id}] migrated to v2: {owned} owned, {unowned} unowned")
+        return 0
+
+    if args.update_sources:
+        tracked_repos = config.get("tracked_repos", {})
+        if tracked_repos:
+            import sync_tracked_repos
+
+            cache_root = repo_root / ".tracked-repos-cache"
+            state_path = repo_root / "config" / sync_tracked_repos.TRACKED_REPOS_STATE_FILENAME
+            state = sync_tracked_repos.load_state(state_path)
+            manifest_name = config.get("manifest_filename", ".skill-sync-manifest.json")
+            selected_target_ids = {
+                target_id
+                for target_id, target_cfg in targets.items()
+                if target_cfg.get("enabled", False)
+                and target_matches_host(target_cfg, host)
+                and (not target_filter or target_id in target_filter)
+            }
+
+            for source_name, source_cfg in tracked_repos.items():
+                result = sync_tracked_repos.update_tracked_repo(
+                    source_name,
+                    source_cfg,
+                    targets,
+                    cache_root,
+                    resolve_target_path=lambda cfg: target_root_for_runtime(cfg, runtime_host),
+                    state=state,
+                    target_ids=selected_target_ids,
+                    dry_run=not args.apply,
+                )
+                print(f"\n[tracked:{source_name}] {result['action']} -> {result['commit'][:8]}")
+                print(f"  skills found: {result['skills_found']}")
+                for tid, tres in result["targets"].items():
+                    if tres["status"] in {"ok", "planned"}:
+                        if tres["mode"] == "clone":
+                            print(f"  [{tid}] clone {tres['action']} -> {tres['commit'][:8]}, symlinks: {tres.get('symlinks_created', 0)} created")
+                        else:
+                            print(f"  [{tid}] flat_copy updated={tres['updated']} skipped={tres['skipped']}")
+                    elif tres["status"] == "up_to_date":
+                        print(f"  [{tid}] up to date ({tres['commit'][:8]})")
+                    elif tres["status"] == "skipped":
+                        print(f"  [{tid}] skipped ({tres['reason']})")
+                    else:
+                        print(f"  [{tid}] ERROR: {tres.get('error', 'unknown')}")
+
+                skill_names = result.get("skill_names", [])
+                for tid, tres in result["targets"].items():
+                    if tres.get("status") not in ("ok", "planned", "up_to_date"):
+                        continue
+                    tcfg = targets.get(tid)
+                    if not tcfg:
+                        continue
+                    try:
+                        target_path = target_root_for_runtime(tcfg, runtime_host)
+                    except SourceError:
+                        continue
+                    ownership_result = apply_tracked_ownership(
+                        target_id=tid,
+                        target_kind=tcfg["kind"],
+                        manifest_path=target_path / manifest_name,
+                        target_root=target_path,
+                        source_name=source_name,
+                        skill_names=skill_names,
+                        apply=args.apply,
+                    )
+                    if ownership_result["removed"]:
+                        action = "removed" if args.apply else "would remove"
+                        print(f"  [{tid}] {action} stale tracked skills: {', '.join(ownership_result['removed'])}")
+
+            if args.apply:
+                sync_tracked_repos.save_state(state_path, state)
+            print()
     selected = []
     for target_id, target_cfg in targets.items():
         if target_filter and target_id not in target_filter:

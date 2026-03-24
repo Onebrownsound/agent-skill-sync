@@ -47,7 +47,7 @@ def prepare_cli_repo(root: Path) -> Path:
 
 def run_cli(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["python", "scripts/manage_skill_sources.py", *args],
+        [sys.executable, "scripts/manage_skill_sources.py", *args],
         cwd=repo_root,
         text=True,
         capture_output=True,

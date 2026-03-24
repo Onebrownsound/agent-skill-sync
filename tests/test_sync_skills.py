@@ -65,13 +65,15 @@ def make_cli_repo(root: Path, target_path: Path) -> Path:
         AGENT_MODULE_PATH.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
-    sync_skills.write_json(repo_root / "config" / "targets.local.json", sample_config(target_path))
+    config = sample_config(target_path)
+    config["targets"]["windows_codex"]["host"] = sync_skills.detect_host()
+    sync_skills.write_json(repo_root / "config" / "targets.local.json", config)
     return repo_root
 
 
 def run_cli(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["python", "scripts/sync_skills.py", *args],
+        [sys.executable, "scripts/sync_skills.py", *args],
         cwd=repo_root,
         text=True,
         capture_output=True,
@@ -143,6 +145,29 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(calls[0][:3], ["wsl.exe", "bash", "-lc"])
         self.assertIn("--host wsl", calls[0][3])
         self.assertIn("--target wsl_codex", calls[0][3])
+
+    def test_delegated_sync_args_preserve_new_flags(self) -> None:
+        args = sync_skills.parse_args.__globals__["argparse"].Namespace(
+            config="config/targets.local.json",
+            host="all",
+            target=[],
+            pull=False,
+            bucket=None,
+            rollback=None,
+            check=True,
+            apply=False,
+            clean=False,
+            no_backup=False,
+            quiet=False,
+            ticket_id=None,
+            update_sources=True,
+            migrate_manifests=True,
+        )
+
+        command = sync_skills.delegated_sync_args(args, host_override="wsl", target_ids=["wsl_codex"])
+
+        self.assertIn("--update-sources", command)
+        self.assertIn("--migrate-manifests", command)
 
 
 class PullPlanTests(unittest.TestCase):
@@ -792,7 +817,8 @@ class CLITests(unittest.TestCase):
             make_skill(repo_root / "skills" / "codex", "alpha", "# Repo alpha\n")
             make_skill(target_root, "alpha", "# Live alpha\n")
 
-            result = run_cli(repo_root, "--apply", "--host", "windows")
+            host = sync_skills.detect_host()
+            result = run_cli(repo_root, "--apply", "--host", host)
             match = re.search(r"Ticket: ([0-9a-f-]{36})", result.stdout)
 
             self.assertIsNotNone(match, result.stdout)
@@ -828,7 +854,8 @@ class CLITests(unittest.TestCase):
             (source_alpha / "notes.txt").write_text("new-alpha", encoding="utf-8")
             make_skill(repo_root / "skills" / "codex", "gamma", "# Repo gamma\n")
 
-            deploy = run_cli(repo_root, "--apply", "--host", "windows")
+            host = sync_skills.detect_host()
+            deploy = run_cli(repo_root, "--apply", "--host", host)
             match = re.search(r"Ticket: ([0-9a-f-]{36})", deploy.stdout)
             self.assertIsNotNone(match, deploy.stdout)
             assert match is not None
@@ -837,11 +864,325 @@ class CLITests(unittest.TestCase):
             self.assertTrue((target_root / "gamma").exists())
             self.assertEqual((target_root / "alpha" / "notes.txt").read_text(encoding="utf-8"), "new-alpha")
 
-            rollback = run_cli(repo_root, "--rollback", ticket, "--apply", "--host", "windows")
+            rollback = run_cli(repo_root, "--rollback", ticket, "--apply", "--host", host)
 
             self.assertIn(f"Rollback complete for ticket {ticket}.", rollback.stdout)
             self.assertFalse((target_root / "gamma").exists())
             self.assertEqual((target_root / "alpha" / "notes.txt").read_text(encoding="utf-8"), "old-alpha")
+
+
+class CrossRuntimePathTests(unittest.TestCase):
+    def test_wsl_to_windows_c_drive(self) -> None:
+        cfg = {"host": "windows", "path": "C:/Users/redme/.claude/skills"}
+        result = sync_skills.target_root_for_runtime(cfg, "wsl")
+        self.assertEqual(result, Path("/mnt/c/Users/redme/.claude/skills"))
+
+    def test_wsl_to_windows_d_drive(self) -> None:
+        cfg = {"host": "windows", "path": "D:/Projects/skills"}
+        result = sync_skills.target_root_for_runtime(cfg, "wsl")
+        self.assertEqual(result, Path("/mnt/d/Projects/skills"))
+
+    def test_same_host_unchanged(self) -> None:
+        cfg = {"host": "wsl", "path": "/home/redme/.claude/skills"}
+        result = sync_skills.target_root_for_runtime(cfg, "wsl")
+        self.assertEqual(result, Path("/home/redme/.claude/skills"))
+
+    def test_windows_to_wsl_still_raises(self) -> None:
+        cfg = {"host": "wsl", "path": "/home/redme/.claude/skills"}
+        with self.assertRaises(sync_skills.SourceError):
+            sync_skills.target_root_for_runtime(cfg, "windows")
+
+
+class OwnerAwareManifestTests(unittest.TestCase):
+    def _make_repo_and_target(self, tmp_dir: str) -> tuple:
+        repo_root = Path(tmp_dir) / "repo"
+        (repo_root / "skills" / "shared" / "my-skill").mkdir(parents=True)
+        (repo_root / "skills" / "shared" / "my-skill" / "SKILL.md").write_text("---\nname: my-skill\n---\n")
+        (repo_root / "skills" / "claude").mkdir(parents=True)
+        (repo_root / "skills" / "codex").mkdir(parents=True)
+
+        target_root = Path(tmp_dir) / "target"
+        (target_root / "my-skill").mkdir(parents=True)
+        (target_root / "my-skill" / "SKILL.md").write_text("---\nname: my-skill\n---\n")
+        (target_root / "gstack-browse").mkdir(parents=True)
+        (target_root / "gstack-browse" / "SKILL.md").write_text("---\nname: gstack-browse\n---\n")
+
+        config = {
+            "version": 1,
+            "manifest_filename": ".skill-sync-manifest.json",
+            "catalog": {"shared": "skills/shared", "codex": "skills/codex", "claude": "skills/claude"},
+        }
+        target_cfg = {"host": "wsl", "path": str(target_root), "kind": "claude", "enabled": True}
+        return repo_root, target_root, config, target_cfg
+
+    def test_v2_manifest_does_not_remove_unowned(self) -> None:
+        import json
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root, target_root, config, target_cfg = self._make_repo_and_target(tmp_dir)
+            manifest = {
+                "version": 2, "target": "test", "kind": "claude",
+                "skills": {"my-skill": {"owner": "sync"}, "gstack-browse": {}},
+                "agents": []
+            }
+            (target_root / ".skill-sync-manifest.json").write_text(json.dumps(manifest))
+
+            plan = sync_skills.plan_push_target(repo_root, config, "test", target_cfg, "wsl")
+            self.assertNotIn("gstack-browse", plan["remove"])
+
+    def test_v1_manifest_auto_migrates_unowned(self) -> None:
+        import json
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root, target_root, config, target_cfg = self._make_repo_and_target(tmp_dir)
+            manifest = {
+                "version": 1, "target": "test", "kind": "claude",
+                "skills": ["my-skill", "gstack-browse"], "agents": []
+            }
+            (target_root / ".skill-sync-manifest.json").write_text(json.dumps(manifest))
+
+            plan = sync_skills.plan_push_target(repo_root, config, "test", target_cfg, "wsl")
+            self.assertNotIn("gstack-browse", plan["remove"])
+            self.assertTrue(
+                "my-skill" in plan.get("unchanged", []) or "my-skill" in plan.get("update", [])
+            )
+
+    def test_build_manifest_v2_preserves_unowned(self) -> None:
+        existing = {
+            "version": 2, "skills": {"a": {"owner": "sync"}, "gstack": {}}, "agents": []
+        }
+        result = sync_skills.build_manifest_v2("t", "claude", ["a", "b"], existing)
+        self.assertEqual(result["version"], 2)
+        self.assertEqual(result["skills"]["a"], {"owner": "sync"})
+        self.assertEqual(result["skills"]["b"], {"owner": "sync"})
+        self.assertEqual(result["skills"]["gstack"], {})
+        self.assertNotIn("owner", result["skills"].get("gstack", {}))
+
+    def test_build_manifest_v2_from_v1(self) -> None:
+        existing = {"version": 1, "skills": ["a", "gstack", "gstack-browse"], "agents": []}
+        result = sync_skills.build_manifest_v2("t", "claude", ["a"], existing)
+        self.assertEqual(result["skills"]["a"], {"owner": "sync"})
+        self.assertEqual(result["skills"]["gstack"], {})
+        self.assertEqual(result["skills"]["gstack-browse"], {})
+
+
+class ApplyTargetManifestV2Tests(unittest.TestCase):
+    """Verify that apply_target writes v2 manifests with correct owner tracking."""
+
+    def test_apply_target_writes_v2_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir) / "repo"
+            (repo_root / "skills" / "shared" / "alpha").mkdir(parents=True)
+            (repo_root / "skills" / "shared" / "alpha" / "SKILL.md").write_text("# alpha")
+            (repo_root / "skills" / "claude").mkdir(parents=True)
+
+            target_root = Path(tmp_dir) / "target"
+            target_root.mkdir()
+
+            config = sample_config(target_root)
+            target_cfg = {"host": "wsl", "path": str(target_root), "kind": "claude", "enabled": True}
+
+            plan = sync_skills.plan_push_target(repo_root, config, "test", target_cfg, "wsl")
+            sync_skills.apply_target(plan, clean=False, backup=False)
+
+            manifest_path = target_root / ".skill-sync-manifest.json"
+            self.assertTrue(manifest_path.exists())
+            import json
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["version"], 2)
+            self.assertIsInstance(manifest["skills"], dict)
+            self.assertEqual(manifest["skills"]["alpha"], {"owner": "sync"})
+
+    def test_apply_target_preserves_unowned_in_v2(self) -> None:
+        """When applying over a v2 manifest with unowned skills, they stay."""
+        import json
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir) / "repo"
+            (repo_root / "skills" / "shared" / "alpha").mkdir(parents=True)
+            (repo_root / "skills" / "shared" / "alpha" / "SKILL.md").write_text("# alpha")
+            (repo_root / "skills" / "claude").mkdir(parents=True)
+
+            target_root = Path(tmp_dir) / "target"
+            (target_root / "alpha").mkdir(parents=True)
+            (target_root / "alpha" / "SKILL.md").write_text("# alpha")
+            (target_root / "external-skill").mkdir(parents=True)
+            (target_root / "external-skill" / "SKILL.md").write_text("# external")
+
+            # Pre-existing v2 manifest with an unowned skill
+            manifest_path = target_root / ".skill-sync-manifest.json"
+            manifest_path.write_text(json.dumps({
+                "version": 2, "target": "test", "kind": "claude",
+                "skills": {
+                    "alpha": {"owner": "sync"},
+                    "external-skill": {"owner": "tracked:foo"},
+                },
+                "agents": [],
+            }))
+
+            config = sample_config(target_root)
+            target_cfg = {"host": "wsl", "path": str(target_root), "kind": "claude", "enabled": True}
+            plan = sync_skills.plan_push_target(repo_root, config, "test", target_cfg, "wsl")
+            sync_skills.apply_target(plan, clean=False, backup=False)
+
+            updated = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(updated["version"], 2)
+            self.assertEqual(updated["skills"]["alpha"], {"owner": "sync"})
+            self.assertEqual(updated["skills"]["external-skill"], {"owner": "tracked:foo"})
+
+    def test_apply_target_migrates_v1_to_v2(self) -> None:
+        """When applying over a v1 manifest, it gets upgraded to v2."""
+        import json
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir) / "repo"
+            (repo_root / "skills" / "shared" / "alpha").mkdir(parents=True)
+            (repo_root / "skills" / "shared" / "alpha" / "SKILL.md").write_text("# alpha")
+            (repo_root / "skills" / "claude").mkdir(parents=True)
+
+            target_root = Path(tmp_dir) / "target"
+            (target_root / "alpha").mkdir(parents=True)
+            (target_root / "alpha" / "SKILL.md").write_text("# alpha")
+            (target_root / "gstack").mkdir(parents=True)
+            (target_root / "gstack" / "SKILL.md").write_text("# gstack")
+
+            manifest_path = target_root / ".skill-sync-manifest.json"
+            manifest_path.write_text(json.dumps({
+                "version": 1, "target": "test", "kind": "claude",
+                "skills": ["alpha", "gstack"], "agents": [],
+            }))
+
+            config = sample_config(target_root)
+            target_cfg = {"host": "wsl", "path": str(target_root), "kind": "claude", "enabled": True}
+            plan = sync_skills.plan_push_target(repo_root, config, "test", target_cfg, "wsl")
+            sync_skills.apply_target(plan, clean=False, backup=False)
+
+            updated = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(updated["version"], 2)
+            self.assertEqual(updated["skills"]["alpha"], {"owner": "sync"})
+            # gstack was in v1 list but not in source — should become unowned
+            self.assertEqual(updated["skills"]["gstack"], {})
+
+
+class OwnedSkillsHelperTests(unittest.TestCase):
+    """Test _owned_skills_from_manifest edge cases."""
+
+    def test_v2_only_sync_owner_returned(self) -> None:
+        manifest = {
+            "skills": {
+                "a": {"owner": "sync"},
+                "b": {"owner": "tracked:gstack"},
+                "c": {},
+            }
+        }
+        result = sync_skills._owned_skills_from_manifest(manifest, ["a", "b", "c"])
+        self.assertEqual(result, {"a"})
+
+    def test_v1_only_matching_desired_returned(self) -> None:
+        manifest = {"skills": ["a", "b", "gstack"]}
+        result = sync_skills._owned_skills_from_manifest(manifest, ["a", "b"])
+        self.assertEqual(result, {"a", "b"})
+        self.assertNotIn("gstack", result)
+
+    def test_empty_manifest(self) -> None:
+        result = sync_skills._owned_skills_from_manifest({}, ["a"])
+        self.assertEqual(result, set())
+
+    def test_v2_with_tracked_owner_not_returned(self) -> None:
+        manifest = {"skills": {"gstack": {"owner": "tracked:gstack"}, "gstack-browse": {"owner": "tracked:gstack"}}}
+        result = sync_skills._owned_skills_from_manifest(manifest, [])
+        self.assertEqual(result, set())
+
+
+class BuildManifestV2EdgeCaseTests(unittest.TestCase):
+    def test_empty_existing_manifest(self) -> None:
+        result = sync_skills.build_manifest_v2("t", "claude", ["a", "b"], {})
+        self.assertEqual(result["version"], 2)
+        self.assertEqual(result["skills"]["a"], {"owner": "sync"})
+        self.assertEqual(result["skills"]["b"], {"owner": "sync"})
+        self.assertEqual(len(result["skills"]), 2)
+
+    def test_v2_removes_sync_owned_skill_not_in_desired(self) -> None:
+        existing = {"skills": {"old": {"owner": "sync"}, "keep": {"owner": "tracked:x"}}}
+        result = sync_skills.build_manifest_v2("t", "claude", ["new"], existing)
+        self.assertNotIn("old", result["skills"])  # was sync-owned, no longer desired
+        self.assertEqual(result["skills"]["keep"], {"owner": "tracked:x"})  # tracked, preserved
+        self.assertEqual(result["skills"]["new"], {"owner": "sync"})
+
+    def test_v1_with_no_overlap(self) -> None:
+        """v1 manifest where none of the listed skills are in desired → all become unowned."""
+        existing = {"skills": ["gstack", "gstack-browse"]}
+        result = sync_skills.build_manifest_v2("t", "claude", ["my-skill"], existing)
+        self.assertEqual(result["skills"]["gstack"], {})
+        self.assertEqual(result["skills"]["gstack-browse"], {})
+        self.assertEqual(result["skills"]["my-skill"], {"owner": "sync"})
+
+    def test_agents_preserved_from_existing(self) -> None:
+        existing = {"skills": {}, "agents": ["code-reviewer.md"]}
+        result = sync_skills.build_manifest_v2("t", "claude", ["a"], existing)
+        self.assertEqual(result["agents"], ["code-reviewer.md"])
+
+
+class TrackedManifestOwnershipTests(unittest.TestCase):
+    def test_apply_tracked_ownership_creates_manifest_and_marks_current_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_root = Path(tmp_dir) / "target"
+            target_root.mkdir()
+
+            updated = sync_skills.apply_tracked_ownership(
+                target_id="windows_codex",
+                target_kind="codex",
+                manifest_path=target_root / ".skill-sync-manifest.json",
+                target_root=target_root,
+                source_name="gstack",
+                skill_names=["gstack", "gstack-browse"],
+                apply=True,
+            )
+
+            self.assertEqual(updated["removed"], [])
+            manifest = sync_skills.load_manifest(target_root / ".skill-sync-manifest.json")
+            self.assertEqual(manifest["skills"]["gstack"], {"owner": "tracked:gstack"})
+            self.assertEqual(manifest["skills"]["gstack-browse"], {"owner": "tracked:gstack"})
+
+    def test_apply_tracked_ownership_removes_stale_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_root = Path(tmp_dir) / "target"
+            target_root.mkdir()
+            stale_dir = make_skill(target_root, "gstack-old", "# old\n")
+            current_dir = make_skill(target_root, "gstack", "# current\n")
+            current_subdir = make_skill(target_root, "gstack-browse", "# browse\n")
+            self.assertTrue(stale_dir.exists())
+            self.assertTrue(current_dir.exists())
+            self.assertTrue(current_subdir.exists())
+
+            sync_skills.write_json(
+                target_root / ".skill-sync-manifest.json",
+                {
+                    "version": 2,
+                    "target": "windows_codex",
+                    "kind": "codex",
+                    "skills": {
+                        "gstack": {"owner": "tracked:gstack"},
+                        "gstack-old": {"owner": "tracked:gstack"},
+                        "other": {"owner": "tracked:other"},
+                    },
+                    "agents": [],
+                },
+            )
+
+            updated = sync_skills.apply_tracked_ownership(
+                target_id="windows_codex",
+                target_kind="codex",
+                manifest_path=target_root / ".skill-sync-manifest.json",
+                target_root=target_root,
+                source_name="gstack",
+                skill_names=["gstack", "gstack-browse"],
+                apply=True,
+            )
+
+            self.assertEqual(updated["removed"], ["gstack-old"])
+            self.assertFalse((target_root / "gstack-old").exists())
+            manifest = sync_skills.load_manifest(target_root / ".skill-sync-manifest.json")
+            self.assertNotIn("gstack-old", manifest["skills"])
+            self.assertEqual(manifest["skills"]["gstack"], {"owner": "tracked:gstack"})
+            self.assertEqual(manifest["skills"]["gstack-browse"], {"owner": "tracked:gstack"})
+            self.assertEqual(manifest["skills"]["other"], {"owner": "tracked:other"})
 
 
 if __name__ == "__main__":
