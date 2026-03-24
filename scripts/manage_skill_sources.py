@@ -96,6 +96,24 @@ def registry_path(repo_root: Path, scope: str) -> Path:
     return repo_root / "config" / filename
 
 
+def tracked_registry_path(repo_root: Path) -> Path:
+    return repo_root / "config" / "tracked-skill-sources.local.json"
+
+
+def registry_specs(repo_root: Path) -> list[tuple[str, Path]]:
+    return [
+        ("repo", registry_path(repo_root, "repo")),
+        ("local", registry_path(repo_root, "local")),
+        ("tracked", tracked_registry_path(repo_root)),
+    ]
+
+
+def registry_file_for_scope(repo_root: Path, scope: str) -> Path:
+    if scope == "tracked":
+        return tracked_registry_path(repo_root)
+    return registry_path(repo_root, scope)
+
+
 def install_plan_dir(repo_root: Path) -> Path:
     return repo_root / "config" / "install-plans"
 
@@ -339,12 +357,7 @@ def normalize_plugin_path(path: Path) -> Path:
 def list_records(repo_root: Path) -> list[dict]:
     records: list[dict] = []
     deploy_state = load_deploy_state(deploy_state_path(repo_root))
-    registry_specs = [
-        ("repo", registry_path(repo_root, "repo")),
-        ("local", registry_path(repo_root, "local")),
-        ("tracked", repo_root / "config" / "tracked-skill-sources.local.json"),
-    ]
-    for scope, path in registry_specs:
+    for scope, path in registry_specs(repo_root):
         if not path.is_file():
             continue
         registry = load_registry(path)
@@ -367,8 +380,10 @@ def list_records(repo_root: Path) -> list[dict]:
 
 def find_record(repo_root: Path, key: str) -> tuple[str, dict]:
     found: list[tuple[str, dict]] = []
-    for scope in ("repo", "local"):
-        registry = load_registry(registry_path(repo_root, scope))
+    for scope, path in registry_specs(repo_root):
+        if not path.is_file():
+            continue
+        registry = load_registry(path)
         record = registry["skills"].get(key)
         if record:
             found.append((scope, record))
@@ -380,8 +395,10 @@ def find_record(repo_root: Path, key: str) -> tuple[str, dict]:
 
 
 def ensure_key_available(repo_root: Path, key: str) -> None:
-    for scope in ("repo", "local"):
-        registry = load_registry(registry_path(repo_root, scope))
+    for _, path in registry_specs(repo_root):
+        if not path.is_file():
+            continue
+        registry = load_registry(path)
         if key in registry["skills"]:
             raise SourceError(f"Tracked skill already exists: {key}")
 
@@ -515,6 +532,8 @@ def update_tracked_skill(
     github_loader=None,
 ) -> dict:
     scope, record = find_record(repo_root, key)
+    if record["source_type"] == "tracked_repo":
+        raise SourceError("Tracked repo sources are refreshed via sync_skills.py --update-sources.")
     dest = repo_root / record["dest"]
 
     if record["source_type"] == "plugin":
@@ -556,7 +575,7 @@ def update_tracked_skill(
         },
     )
 
-    registry_file = registry_path(repo_root, scope)
+    registry_file = registry_file_for_scope(repo_root, scope)
     registry = load_registry(registry_file)
     stored = registry["skills"][key]
     stored["resolved_revision"] = resolved_revision
@@ -571,6 +590,8 @@ def update_tracked_skill(
 def update_all_tracked_skills(repo_root: Path, github_loader=None) -> list[dict]:
     results = []
     for record in list_records(repo_root):
+        if record.get("source_type") == "tracked_repo":
+            continue
         results.append(update_tracked_skill(repo_root, record["key"], github_loader=github_loader))
     return results
 

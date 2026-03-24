@@ -66,6 +66,10 @@ def make_cli_repo(root: Path, target_path: Path) -> Path:
         AGENT_MODULE_PATH.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    (repo_root / "scripts" / "sync_tracked_repos.py").write_text(
+        (Path(__file__).resolve().parents[1] / "scripts" / "sync_tracked_repos.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     (repo_root / "scripts" / "source_imprints.py").write_text(
         SOURCE_IMPRINTS_MODULE_PATH.read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -283,6 +287,57 @@ class TrackedSourceRefreshTests(unittest.TestCase):
             self.assertEqual([item["key"] for item in result["stale_outputs"]], ["shared/myrepo-old"])
             self.assertFalse((repo_root / "skills" / "shared" / "myrepo-old").exists())
 
+    def test_refresh_tracked_source_catalog_rejects_key_collisions_with_existing_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = root / "repo"
+            (repo_root / "config").mkdir(parents=True)
+            (repo_root / "skills" / "shared").mkdir(parents=True)
+
+            existing = make_skill(repo_root / "skills" / "shared", "foo", "# vendored\n")
+            self.assertTrue(existing.exists())
+            sync_skills.write_json(
+                repo_root / "config" / "skill-sources.json",
+                {
+                    "version": 1,
+                    "skills": {
+                        "shared/foo": {
+                            "name": "foo",
+                            "bucket": "shared",
+                            "dest": "skills/shared/foo",
+                            "scope": "repo",
+                            "source_type": "github",
+                            "source": {"repo": "owner/old", "path": "skills/foo", "ref": "main"},
+                            "resolved_revision": "oldrev",
+                            "installed_at": "2026-03-24T00:00:00",
+                            "updated_at": "2026-03-24T00:00:00",
+                        }
+                    },
+                },
+            )
+
+            cache_root = repo_root / ".tracked-repos-cache" / "myrepo"
+            cache_root.mkdir(parents=True)
+            (cache_root / ".git").mkdir()
+            (cache_root / "foo").mkdir()
+            (cache_root / "foo" / "SKILL.md").write_text("# tracked\n", encoding="utf-8")
+
+            with self.assertRaises(sync_skills.SourceError):
+                sync_skills.refresh_tracked_source_catalog(
+                    actual_repo_root=repo_root,
+                    catalog_repo_root=repo_root,
+                    source_name="myrepo",
+                    source_cfg={
+                        "repo": "https://example.com/repo.git",
+                        "ref": "main",
+                        "skill_map": {"foo": {"source_path": "foo", "bucket": "shared"}},
+                    },
+                    runner=self._make_runner(),
+                    dry_run=False,
+                )
+
+            self.assertEqual((repo_root / "skills" / "shared" / "foo" / "SKILL.md").read_text(encoding="utf-8"), "# vendored\n")
+
 
 class TrackedSourceDiscoveryTests(unittest.TestCase):
     def test_discover_tracked_skill_entries_uses_recognized_layouts(self) -> None:
@@ -329,6 +384,42 @@ class TrackedSourceDiscoveryTests(unittest.TestCase):
             self.assertEqual(result["gstack"]["source_path"], ".")
             self.assertEqual(result["gstack-browse"]["source_path"], "browse")
             self.assertEqual(result["gstack-qa"]["source_path"], "qa")
+
+
+class TrackedSourceCLITests(unittest.TestCase):
+    def test_update_sources_check_uses_preview_catalog_for_deploy_state(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            target_root = root / "target"
+            target_root.mkdir()
+            repo_root = make_cli_repo(root, target_root)
+            host = sync_skills.detect_host()
+
+            config = sync_skills.load_json(repo_root / "config" / "targets.local.json")
+            config["tracked_repos"] = {
+                "myrepo": {
+                    "repo": "https://example.com/repo.git",
+                    "ref": "main",
+                    "skill_map": {
+                        "myrepo": {"source_path": ".", "bucket": "shared"},
+                    },
+                }
+            }
+            sync_skills.write_json(repo_root / "config" / "targets.local.json", config)
+
+            cache_root = repo_root / ".tracked-repos-cache" / "myrepo"
+            cache_root.mkdir(parents=True)
+            (cache_root / "SKILL.md").write_text("# tracked\n", encoding="utf-8")
+            subprocess.run(["git", "init"], cwd=cache_root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=cache_root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=cache_root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "add", "SKILL.md"], cwd=cache_root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=cache_root, check=True, capture_output=True, text=True)
+
+            run_cli(repo_root, "--update-sources", "--check", "--host", host)
+
+            deploy_state = sync_skills.load_json(repo_root / "config" / "deploy-state.local.json")
+            self.assertIn("shared/myrepo", deploy_state["targets"]["windows_codex"]["skills"])
 
 
 class PullPlanTests(unittest.TestCase):

@@ -93,6 +93,47 @@ class PluginInstallTests(unittest.TestCase):
             self.assertTrue((repo_root / record["imprint"] / "SKILL.md").is_file())
             self.assertTrue((repo_root / record["overlay"]).is_dir())
 
+    def test_update_all_tracked_skills_skips_tracked_repo_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            repo_root = prepare_repo_root(root)
+            plugin_skill = make_skill(root / "plugin", "demo-plugin")
+
+            manage_skill_sources.install_plugin_skill(
+                repo_root=repo_root,
+                bucket="codex",
+                plugin_path=plugin_skill,
+            )
+            manage_skill_sources.save_registry(
+                repo_root / "config" / "tracked-skill-sources.local.json",
+                {
+                    "version": 1,
+                    "skills": {
+                        "shared/gstack-browse": {
+                            "name": "gstack-browse",
+                            "bucket": "shared",
+                            "dest": "skills/shared/gstack-browse",
+                            "scope": "repo",
+                            "source_type": "tracked_repo",
+                            "source": {
+                                "repo": "owner/repo",
+                                "ref": "main",
+                                "path": "browse",
+                                "source_name": "gstack",
+                            },
+                            "resolved_revision": "abc123",
+                            "installed_at": "2026-03-24T00:00:00",
+                            "updated_at": "2026-03-24T00:00:00",
+                        }
+                    },
+                },
+            )
+
+            results = manage_skill_sources.update_all_tracked_skills(repo_root)
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["key"], "codex/demo-plugin")
+
     def test_update_tracked_plugin_skill_refreshes_repo_copy_and_revision(self) -> None:
         with tempfile.TemporaryDirectory() as root_dir:
             root = Path(root_dir)

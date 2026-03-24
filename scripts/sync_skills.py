@@ -668,6 +668,7 @@ def refresh_tracked_source_catalog(
     state = load_tracked_source_state(state_path)
     registry_path = tracked_source_registry_path(catalog_repo_root)
     registry = load_tracked_source_registry(registry_path)
+    write_preview_catalog = (not dry_run) or (catalog_repo_root != actual_repo_root)
     previous_records = {
         key: value
         for key, value in registry["skills"].items()
@@ -687,19 +688,38 @@ def refresh_tracked_source_catalog(
         overlay_root = overlays_root if source_path == "." else overlays_root / source_path
         bucket = tracked_skill_bucket(source_cfg, entry)
         dest = catalog_repo_root / "skills" / bucket / skill_name
+        key = f"{bucket}/{skill_name}"
+
+        for path in source_registry_paths(catalog_repo_root):
+            if not path.is_file():
+                continue
+            payload = load_json(path)
+            existing = payload.get("skills", {}).get(key)
+            if not existing:
+                continue
+            if existing.get("source_type") == "tracked_repo" and existing.get("source", {}).get("source_name") == source_name:
+                continue
+            raise SourceError(
+                f"Tracked source '{source_name}' would overwrite existing source-managed skill '{key}'."
+            )
+
+        if dest.exists() and key not in previous_records:
+            raise SourceError(
+                f"Tracked source '{source_name}' would overwrite existing repo path '{dest}'."
+            )
+
         status = source_imprints.materialization_status(
             imprint_tree=skill_root,
             overlay_tree=overlay_root if overlay_root.exists() else None,
             dest=dest,
         )
-        if not dry_run and status != "unchanged":
+        if write_preview_catalog and status != "unchanged":
             source_imprints.materialize_skill(
                 imprint_tree=skill_root,
                 overlay_tree=overlay_root if overlay_root.exists() else None,
                 dest=dest,
             )
 
-        key = f"{bucket}/{skill_name}"
         previous = previous_records.get(key, {})
         current_records[key] = {
             "name": skill_name,
@@ -730,13 +750,13 @@ def refresh_tracked_source_catalog(
         record = previous_records[key]
         dest = catalog_repo_root / record["dest"]
         stale_outputs.append({"key": key, "dest": str(dest)})
-        if not dry_run and dest.exists():
+        if write_preview_catalog and dest.exists():
             if dest.is_symlink() or dest.is_file():
                 dest.unlink()
             else:
                 shutil.rmtree(dest)
 
-    if not dry_run:
+    if write_preview_catalog:
         registry["skills"] = {
             key: value
             for key, value in registry["skills"].items()
@@ -744,6 +764,22 @@ def refresh_tracked_source_catalog(
         }
         registry["skills"].update(current_records)
         save_tracked_source_registry(registry_path, registry)
+
+        source_imprints.save_source_metadata(
+            catalog_repo_root,
+            source_id,
+            {
+                "version": 1,
+                "source_id": source_id,
+                "source_type": "tracked_repo",
+                "source": {"repo": repo_url, "ref": ref},
+                "resolved_revision": commit,
+                "updated_at": now,
+                "skills": sorted(current_records),
+            },
+        )
+
+    if not dry_run:
         save_tracked_source_state(
             state_path,
             {
@@ -759,19 +795,6 @@ def refresh_tracked_source_catalog(
                         "skills": sorted(current_records),
                     },
                 },
-            },
-        )
-        source_imprints.save_source_metadata(
-            catalog_repo_root,
-            source_id,
-            {
-                "version": 1,
-                "source_id": source_id,
-                "source_type": "tracked_repo",
-                "source": {"repo": repo_url, "ref": ref},
-                "resolved_revision": commit,
-                "updated_at": now,
-                "skills": sorted(current_records),
             },
         )
 
@@ -1545,6 +1568,7 @@ def main() -> int:
         if not args.pull:
             refresh_deploy_state(
                 repo_root=repo_root,
+                catalog_root=catalog_repo_root,
                 config=config,
                 target_ids=[plan["id"] for plan in selected],
                 host=host,
